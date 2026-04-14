@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 const (
 	heartbeatTimeout = 45 * time.Second
 	stableConnTime   = 60 * time.Second
+	maxStreamFrame   = 1 << 20
 )
 
 type localOptions struct {
@@ -45,6 +47,17 @@ type streamEvent struct {
 	line string
 	err  error
 	eof  bool
+}
+
+type notifDispatcher struct {
+	ctx      context.Context
+	notifier notifier.Notifier
+
+	mu     sync.Mutex
+	cond   *sync.Cond
+	queue  []*proto.NotifMessage
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // NewLocalCmd connects to the remote VM and delivers desktop notifications locally.
@@ -237,8 +250,12 @@ func processStream(ctx context.Context, stdout io.Reader, n notifier.Notifier) e
 
 func processStreamWithTimeout(ctx context.Context, stdout io.Reader, n notifier.Notifier, timeout time.Duration) error {
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamFrame)
 	heartbeatTimer := time.NewTimer(timeout)
 	defer heartbeatTimer.Stop()
+
+	dispatcher := newNotifDispatcher(ctx, n)
+	defer dispatcher.CloseAndWait()
 
 	events := make(chan streamEvent)
 	done := make(chan struct{})
@@ -293,12 +310,66 @@ func processStreamWithTimeout(ctx context.Context, stdout io.Reader, n notifier.
 
 			switch typed := msg.(type) {
 			case *proto.NotifMessage:
-				handleNotif(ctx, typed, n)
+				dispatcher.Enqueue(typed)
 			case *proto.HeartbeatMessage:
 				resetTimer(heartbeatTimer, timeout)
 			case nil:
 			}
 		}
+	}
+}
+
+func newNotifDispatcher(ctx context.Context, n notifier.Notifier) *notifDispatcher {
+	dispatcher := &notifDispatcher{
+		ctx:      ctx,
+		notifier: n,
+	}
+	dispatcher.cond = sync.NewCond(&dispatcher.mu)
+	dispatcher.wg.Add(1)
+	go dispatcher.run()
+	return dispatcher
+}
+
+func (d *notifDispatcher) Enqueue(msg *proto.NotifMessage) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.closed {
+		return
+	}
+
+	d.queue = append(d.queue, msg)
+	d.cond.Signal()
+}
+
+func (d *notifDispatcher) CloseAndWait() {
+	d.mu.Lock()
+	d.closed = true
+	d.cond.Broadcast()
+	d.mu.Unlock()
+
+	d.wg.Wait()
+}
+
+func (d *notifDispatcher) run() {
+	defer d.wg.Done()
+
+	for {
+		d.mu.Lock()
+		for len(d.queue) == 0 && !d.closed {
+			d.cond.Wait()
+		}
+		if len(d.queue) == 0 && d.closed {
+			d.mu.Unlock()
+			return
+		}
+
+		msg := d.queue[0]
+		d.queue[0] = nil
+		d.queue = d.queue[1:]
+		d.mu.Unlock()
+
+		handleNotif(d.ctx, msg, d.notifier)
 	}
 }
 

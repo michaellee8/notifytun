@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,13 +16,52 @@ import (
 )
 
 type recordingNotifier struct {
+	mu    sync.Mutex
 	calls []notifier.Notification
 	err   error
 }
 
 func (r *recordingNotifier) Notify(_ context.Context, n notifier.Notification) error {
+	r.mu.Lock()
 	r.calls = append(r.calls, n)
+	r.mu.Unlock()
 	return r.err
+}
+
+func (r *recordingNotifier) snapshot() []notifier.Notification {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]notifier.Notification, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+type blockingNotifier struct {
+	started chan struct{}
+	release chan struct{}
+
+	mu    sync.Mutex
+	calls []notifier.Notification
+}
+
+func (b *blockingNotifier) Notify(ctx context.Context, n notifier.Notification) error {
+	b.mu.Lock()
+	b.calls = append(b.calls, n)
+	b.mu.Unlock()
+
+	select {
+	case <-b.started:
+	default:
+		close(b.started)
+	}
+
+	select {
+	case <-b.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func TestLocalOptionsApplyConfigFallbacks(t *testing.T) {
@@ -198,8 +238,8 @@ func TestProcessStreamSkipsMalformedJSONAndReturnsEOF(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stream EOF") {
 		t.Fatalf("expected EOF error, got %v", err)
 	}
-	if len(n.calls) != 1 {
-		t.Fatalf("expected 1 delivered notification, got %d", len(n.calls))
+	if calls := n.snapshot(); len(calls) != 1 {
+		t.Fatalf("expected 1 delivered notification, got %d", len(calls))
 	}
 }
 
@@ -240,8 +280,105 @@ func TestProcessStreamHeartbeatResetAllowsLaterNotification(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stream EOF") {
 		t.Fatalf("expected EOF error after processing stream, got %v", err)
 	}
-	if len(n.calls) != 1 || n.calls[0].Title != "Delayed" {
-		t.Fatalf("expected delayed notification after heartbeat reset, got %+v", n.calls)
+	calls := n.snapshot()
+	if len(calls) != 1 || calls[0].Title != "Delayed" {
+		t.Fatalf("expected delayed notification after heartbeat reset, got %+v", calls)
+	}
+}
+
+func TestProcessStreamAcceptsLargeJSONLFrames(t *testing.T) {
+	body := strings.Repeat("a", 70*1024)
+	notif, err := proto.Encode(&proto.NotifMessage{
+		ID:        3,
+		Title:     "Large",
+		Body:      body,
+		Tool:      "codex",
+		CreatedAt: "2026-04-14T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("Encode(notif): %v", err)
+	}
+
+	n := &recordingNotifier{}
+	err = processStreamWithTimeout(context.Background(), strings.NewReader(string(notif)), n, 100*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "stream EOF") {
+		t.Fatalf("expected EOF error, got %v", err)
+	}
+
+	calls := n.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 delivered notification, got %d", len(calls))
+	}
+	if calls[0].Body != body {
+		t.Fatalf("expected large body to be delivered intact, got %d bytes", len(calls[0].Body))
+	}
+}
+
+func TestProcessStreamDoesNotBackpressureHeartbeatsBehindSlowNotifier(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+
+	notif, err := proto.Encode(&proto.NotifMessage{
+		ID:        4,
+		Title:     "Slow",
+		Body:      "Notifier",
+		Tool:      "codex",
+		CreatedAt: "2026-04-14T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("Encode(notif): %v", err)
+	}
+	heartbeat, err := proto.Encode(&proto.HeartbeatMessage{Ts: "2026-04-14T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("Encode(heartbeat): %v", err)
+	}
+
+	n := &blockingNotifier{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- processStreamWithTimeout(context.Background(), reader, n, 250*time.Millisecond)
+	}()
+
+	if _, err := writer.Write(notif); err != nil {
+		t.Fatalf("Write(notif): %v", err)
+	}
+	select {
+	case <-n.started:
+	case <-time.After(time.Second):
+		t.Fatal("expected notifier delivery to start")
+	}
+
+	if _, err := writer.Write(heartbeat); err != nil {
+		t.Fatalf("Write(first heartbeat): %v", err)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := writer.Write(heartbeat)
+		writeDone <- err
+	}()
+
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("Write(second heartbeat): %v", err)
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("expected heartbeat writes to continue while notifier is blocked")
+	}
+
+	close(n.release)
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close(writer): %v", err)
+	}
+
+	err = <-errCh
+	if err == nil || !strings.Contains(err.Error(), "stream EOF") {
+		t.Fatalf("expected EOF after writer close, got %v", err)
 	}
 }
 
@@ -267,8 +404,8 @@ func TestHandleNotifSuppressesBacklog(t *testing.T) {
 		Backlog: true,
 	}, n)
 
-	if len(n.calls) != 0 {
-		t.Fatalf("expected backlog notification to be suppressed, got %+v", n.calls)
+	if calls := n.snapshot(); len(calls) != 0 {
+		t.Fatalf("expected backlog notification to be suppressed, got %+v", calls)
 	}
 }
 
@@ -281,11 +418,12 @@ func TestHandleNotifDeliversSummary(t *testing.T) {
 		Summary: true,
 	}, n)
 
-	if len(n.calls) != 1 {
-		t.Fatalf("expected summary notification to be delivered, got %+v", n.calls)
+	calls := n.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("expected summary notification to be delivered, got %+v", calls)
 	}
-	if n.calls[0].Title != "notifytun" {
-		t.Fatalf("unexpected delivered notification: %+v", n.calls[0])
+	if calls[0].Title != "notifytun" {
+		t.Fatalf("unexpected delivered notification: %+v", calls[0])
 	}
 }
 
@@ -298,7 +436,7 @@ func TestHandleNotifLogsDeliveryFailure(t *testing.T) {
 		Tool:  "codex",
 	}, n)
 
-	if len(n.calls) != 1 {
-		t.Fatalf("expected notifier to be called once, got %d", len(n.calls))
+	if calls := n.snapshot(); len(calls) != 1 {
+		t.Fatalf("expected notifier to be called once, got %d", len(calls))
 	}
 }
