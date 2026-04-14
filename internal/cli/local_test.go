@@ -64,22 +64,56 @@ func (b *blockingNotifier) Notify(ctx context.Context, n notifier.Notification) 
 	}
 }
 
-func newTestSpool(t *testing.T, ctx context.Context, n notifier.Notifier) *notifSpool {
+func (b *blockingNotifier) snapshot() []notifier.Notification {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	out := make([]notifier.Notification, len(b.calls))
+	copy(out, b.calls)
+	return out
+}
+
+func newTestDispatcher(t *testing.T, ctx context.Context, n notifier.Notifier) *notifDispatcher {
 	t.Helper()
 
-	spool, err := newNotifSpool(ctx, n)
-	if err != nil {
-		t.Fatalf("newNotifSpool: %v", err)
-	}
+	dispatcher := newNotifDispatcher(ctx, n, defaultNotifQueueCapacity)
 	t.Cleanup(func() {
-		if err := spool.Close(); err != nil {
+		if err := dispatcher.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
 	})
-	return spool
+	return dispatcher
+}
+
+func newTestDispatcherWithCapacity(t *testing.T, ctx context.Context, n notifier.Notifier, capacity int) *notifDispatcher {
+	t.Helper()
+
+	dispatcher := newNotifDispatcher(ctx, n, capacity)
+	t.Cleanup(func() {
+		if err := dispatcher.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+	return dispatcher
 }
 
 func waitForCalls(t *testing.T, n *recordingNotifier, want int, timeout time.Duration) []notifier.Notification {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		calls := n.snapshot()
+		if len(calls) >= want {
+			return calls
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected at least %d delivered notifications, got %d", want, len(calls))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitForBlockingCalls(t *testing.T, n *blockingNotifier, want int, timeout time.Duration) []notifier.Notification {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
@@ -265,8 +299,8 @@ func TestProcessStreamSkipsMalformedJSONAndReturnsEOF(t *testing.T) {
 	}, "\n") + "\n"
 
 	n := &recordingNotifier{}
-	spool := newTestSpool(t, context.Background(), n)
-	err = processStreamWithTimeout(context.Background(), strings.NewReader(stream), spool, 100*time.Millisecond)
+	dispatcher := newTestDispatcher(t, context.Background(), n)
+	err = processStreamWithTimeout(context.Background(), strings.NewReader(stream), dispatcher, 100*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "stream EOF") {
 		t.Fatalf("expected EOF error, got %v", err)
 	}
@@ -308,8 +342,8 @@ func TestProcessStreamHeartbeatResetAllowsLaterNotification(t *testing.T) {
 	}()
 
 	n := &recordingNotifier{}
-	spool := newTestSpool(t, context.Background(), n)
-	err := processStreamWithTimeout(context.Background(), reader, spool, 50*time.Millisecond)
+	dispatcher := newTestDispatcher(t, context.Background(), n)
+	err := processStreamWithTimeout(context.Background(), reader, dispatcher, 50*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "stream EOF") {
 		t.Fatalf("expected EOF error after processing stream, got %v", err)
 	}
@@ -333,8 +367,8 @@ func TestProcessStreamAcceptsLargeJSONLFrames(t *testing.T) {
 	}
 
 	n := &recordingNotifier{}
-	spool := newTestSpool(t, context.Background(), n)
-	err = processStreamWithTimeout(context.Background(), strings.NewReader(string(notif)), spool, 100*time.Millisecond)
+	dispatcher := newTestDispatcher(t, context.Background(), n)
+	err = processStreamWithTimeout(context.Background(), strings.NewReader(string(notif)), dispatcher, 100*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "stream EOF") {
 		t.Fatalf("expected EOF error, got %v", err)
 	}
@@ -371,19 +405,11 @@ func TestProcessStreamDoesNotBackpressureHeartbeatsBehindSlowNotifier(t *testing
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	spool, err := newNotifSpool(context.Background(), n)
-	if err != nil {
-		t.Fatalf("newNotifSpool: %v", err)
-	}
-	defer func() {
-		if err := spool.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-	}()
+	dispatcher := newTestDispatcherWithCapacity(t, context.Background(), n, 1)
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- processStreamWithTimeout(context.Background(), reader, spool, 250*time.Millisecond)
+		errCh <- processStreamWithTimeout(context.Background(), reader, dispatcher, 250*time.Millisecond)
 	}()
 
 	if _, err := writer.Write(notif); err != nil {
@@ -397,6 +423,12 @@ func TestProcessStreamDoesNotBackpressureHeartbeatsBehindSlowNotifier(t *testing
 
 	if _, err := writer.Write(heartbeat); err != nil {
 		t.Fatalf("Write(first heartbeat): %v", err)
+	}
+	if _, err := writer.Write(notif); err != nil {
+		t.Fatalf("Write(second notification): %v", err)
+	}
+	if _, err := writer.Write(notif); err != nil {
+		t.Fatalf("Write(third notification): %v", err)
 	}
 
 	writeDone := make(chan error, 1)
@@ -426,6 +458,15 @@ func TestProcessStreamDoesNotBackpressureHeartbeatsBehindSlowNotifier(t *testing
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected processStream to return even while notifier is blocked")
 	}
+
+	close(n.release)
+	calls := waitForBlockingCalls(t, n, 3, time.Second)
+	if calls[0].Title != "Slow" || calls[1].Title != "Slow" {
+		t.Fatalf("expected queued notifications to preserve order, got %+v", calls)
+	}
+	if calls[2].Title != "notifytun" || !strings.Contains(calls[2].Body, "1 notifications skipped while local delivery was saturated") {
+		t.Fatalf("expected saturation summary after dropped notifications, got %+v", calls[2])
+	}
 }
 
 func TestProcessStreamHeartbeatTimeout(t *testing.T) {
@@ -434,8 +475,8 @@ func TestProcessStreamHeartbeatTimeout(t *testing.T) {
 	defer writer.Close()
 
 	n := &recordingNotifier{}
-	spool := newTestSpool(t, context.Background(), n)
-	err := processStreamWithTimeout(context.Background(), reader, spool, 20*time.Millisecond)
+	dispatcher := newTestDispatcher(t, context.Background(), n)
+	err := processStreamWithTimeout(context.Background(), reader, dispatcher, 20*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "heartbeat timeout") {
 		t.Fatalf("expected heartbeat timeout, got %v", err)
 	}

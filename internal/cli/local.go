@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,12 +21,12 @@ import (
 	tunnelssh "github.com/michaellee8/notifytun/internal/ssh"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	_ "modernc.org/sqlite"
 )
 
 const (
-	heartbeatTimeout = 45 * time.Second
-	stableConnTime   = 60 * time.Second
+	heartbeatTimeout          = 45 * time.Second
+	stableConnTime            = 60 * time.Second
+	defaultNotifQueueCapacity = 8
 )
 
 type localOptions struct {
@@ -50,21 +50,18 @@ type streamEvent struct {
 	eof  bool
 }
 
-const localSpoolSchema = `
-CREATE TABLE IF NOT EXISTS local_spool (
-	id      INTEGER PRIMARY KEY AUTOINCREMENT,
-	payload BLOB NOT NULL
-);
-`
-
-type notifSpool struct {
+type notifDispatcher struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
-	db       *sql.DB
-	dir      string
-	wake     chan struct{}
-	done     chan struct{}
 	notifier notifier.Notifier
+
+	mu           sync.Mutex
+	cond         *sync.Cond
+	queue        []*proto.NotifMessage
+	droppedCount int
+	closed       bool
+	done         chan struct{}
+	capacity     int
 }
 
 // NewLocalCmd connects to the remote VM and delivers desktop notifications locally.
@@ -173,13 +170,10 @@ func runLocal(ctx context.Context, target, remoteBin, backend, notifyCmd, sshKey
 	if err != nil {
 		return fmt.Errorf("init notifier: %w", err)
 	}
-	spool, err := newNotifSpool(ctx, n)
-	if err != nil {
-		return fmt.Errorf("init local spool: %w", err)
-	}
+	dispatcher := newNotifDispatcher(ctx, n, defaultNotifQueueCapacity)
 	defer func() {
-		if err := spool.Close(); err != nil {
-			log.Printf("warning: close local spool: %v", err)
+		if err := dispatcher.Close(); err != nil {
+			log.Printf("warning: close notifier dispatcher: %v", err)
 		}
 	}()
 
@@ -213,7 +207,7 @@ func runLocal(ctx context.Context, target, remoteBin, backend, notifyCmd, sshKey
 
 		go logRemoteStderr(sess.Stderr)
 
-		streamErr := processStream(ctx, sess.Stdout, spool)
+		streamErr := processStream(ctx, sess.Stdout, dispatcher)
 		_ = sess.Close()
 
 		if ctx.Err() != nil {
@@ -260,11 +254,11 @@ func logRemoteStderr(stderr io.Reader) {
 	}
 }
 
-func processStream(ctx context.Context, stdout io.Reader, spool *notifSpool) error {
-	return processStreamWithTimeout(ctx, stdout, spool, heartbeatTimeout)
+func processStream(ctx context.Context, stdout io.Reader, dispatcher *notifDispatcher) error {
+	return processStreamWithTimeout(ctx, stdout, dispatcher, heartbeatTimeout)
 }
 
-func processStreamWithTimeout(ctx context.Context, stdout io.Reader, spool *notifSpool, timeout time.Duration) error {
+func processStreamWithTimeout(ctx context.Context, stdout io.Reader, dispatcher *notifDispatcher, timeout time.Duration) error {
 	reader := bufio.NewReader(stdout)
 	heartbeatTimer := time.NewTimer(timeout)
 	defer heartbeatTimer.Stop()
@@ -332,9 +326,7 @@ func processStreamWithTimeout(ctx context.Context, stdout io.Reader, spool *noti
 
 			switch typed := msg.(type) {
 			case *proto.NotifMessage:
-				if err := spool.Enqueue(typed); err != nil {
-					return err
-				}
+				dispatcher.Enqueue(typed)
 			case *proto.HeartbeatMessage:
 				resetTimer(heartbeatTimer, timeout)
 			case nil:
@@ -343,150 +335,102 @@ func processStreamWithTimeout(ctx context.Context, stdout io.Reader, spool *noti
 	}
 }
 
-func newNotifSpool(parent context.Context, n notifier.Notifier) (*notifSpool, error) {
-	dir, err := os.MkdirTemp("", "notifytun-local-*")
-	if err != nil {
-		return nil, fmt.Errorf("create spool dir: %w", err)
+func newNotifDispatcher(parent context.Context, n notifier.Notifier, capacity int) *notifDispatcher {
+	if capacity < 1 {
+		capacity = 1
 	}
-
-	dbPath := filepath.Join(dir, "spool.db")
-	sqlDB, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return nil, fmt.Errorf("open spool db: %w", err)
-	}
-
-	stmts := []string{
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA journal_mode = WAL",
-		localSpoolSchema,
-	}
-	for _, stmt := range stmts {
-		if _, err := sqlDB.Exec(stmt); err != nil {
-			_ = sqlDB.Close()
-			_ = os.RemoveAll(dir)
-			return nil, fmt.Errorf("init spool db: %w", err)
-		}
-	}
-
 	ctx, cancel := context.WithCancel(parent)
-	spool := &notifSpool{
+	dispatcher := &notifDispatcher{
 		ctx:      ctx,
 		cancel:   cancel,
-		db:       sqlDB,
-		dir:      dir,
-		wake:     make(chan struct{}, 1),
 		done:     make(chan struct{}),
 		notifier: n,
+		capacity: capacity,
 	}
-	go spool.run()
-	return spool, nil
+	dispatcher.cond = sync.NewCond(&dispatcher.mu)
+	go dispatcher.run()
+	return dispatcher
 }
 
-func (s *notifSpool) Enqueue(msg *proto.NotifMessage) error {
-	if s == nil {
-		return fmt.Errorf("notification spool is nil")
+func (d *notifDispatcher) Enqueue(msg *proto.NotifMessage) {
+	if d == nil || msg == nil {
+		return
 	}
 
-	payload, err := proto.Encode(msg)
-	if err != nil {
-		return fmt.Errorf("encode notification: %w", err)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.closed {
+		return
 	}
 
-	if _, err := s.db.Exec(`INSERT INTO local_spool (payload) VALUES (?)`, payload); err != nil {
-		return fmt.Errorf("spool notification: %w", err)
+	if len(d.queue) >= d.capacity {
+		d.droppedCount++
+		log.Printf("warning: local notifier queue full; coalescing notification backlog (dropped=%d)", d.droppedCount)
+		d.cond.Signal()
+		return
 	}
 
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
-	return nil
+	d.queue = append(d.queue, msg)
+	d.cond.Signal()
 }
 
-func (s *notifSpool) Close() error {
-	if s == nil {
+func (d *notifDispatcher) Close() error {
+	if d == nil {
 		return nil
 	}
 
-	s.cancel()
-	<-s.done
-	return errors.Join(s.db.Close(), os.RemoveAll(s.dir))
+	d.mu.Lock()
+	d.closed = true
+	d.cancel()
+	d.cond.Broadcast()
+	d.mu.Unlock()
+
+	<-d.done
+	return nil
 }
 
-func (s *notifSpool) run() {
-	defer close(s.done)
+func (d *notifDispatcher) run() {
+	defer close(d.done)
 
 	for {
-		id, payload, err := s.next()
-		if err != nil {
-			if s.ctx.Err() != nil {
-				return
-			}
-			log.Printf("warning: local spool read failed: %v", err)
-			select {
-			case <-s.ctx.Done():
-				return
-			case <-time.After(50 * time.Millisecond):
-			}
-			continue
+		msg := d.next()
+		if msg == nil {
+			return
 		}
 
-		if id == 0 {
-			select {
-			case <-s.ctx.Done():
-				return
-			case <-s.wake:
-				continue
-			}
-		}
-
-		msg, err := proto.Decode(bytes.TrimSpace(payload))
-		if err != nil {
-			log.Printf("warning: local spool decode failed: %v", err)
-			if deleteErr := s.delete(id); deleteErr != nil {
-				log.Printf("warning: local spool delete failed: %v", deleteErr)
-			}
-			continue
-		}
-
-		notifMsg, ok := msg.(*proto.NotifMessage)
-		if !ok {
-			if deleteErr := s.delete(id); deleteErr != nil {
-				log.Printf("warning: local spool delete failed: %v", deleteErr)
-			}
-			continue
-		}
-
-		handleNotif(s.ctx, notifMsg, s.notifier)
-		if err := s.delete(id); err != nil {
-			log.Printf("warning: local spool delete failed: %v", err)
-		}
+		handleNotif(d.ctx, msg, d.notifier)
 	}
 }
 
-func (s *notifSpool) next() (int64, []byte, error) {
-	var (
-		id      int64
-		payload []byte
-	)
+func (d *notifDispatcher) next() *proto.NotifMessage {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	err := s.db.QueryRow(`SELECT id, payload FROM local_spool ORDER BY id LIMIT 1`).Scan(&id, &payload)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil, nil
+	for {
+		if d.ctx.Err() != nil {
+			return nil
 		}
-		return 0, nil, err
+		if len(d.queue) > 0 {
+			msg := d.queue[0]
+			d.queue[0] = nil
+			d.queue = d.queue[1:]
+			return msg
+		}
+		if d.droppedCount > 0 {
+			count := d.droppedCount
+			d.droppedCount = 0
+			return &proto.NotifMessage{
+				Title:   "notifytun",
+				Body:    fmt.Sprintf("%d notifications skipped while local delivery was saturated", count),
+				Summary: true,
+			}
+		}
+		if d.closed {
+			return nil
+		}
+		d.cond.Wait()
 	}
-
-	return id, payload, nil
-}
-
-func (s *notifSpool) delete(id int64) error {
-	if _, err := s.db.Exec(`DELETE FROM local_spool WHERE id = ?`, id); err != nil {
-		return fmt.Errorf("delete notification %d: %w", id, err)
-	}
-	return nil
 }
 
 func resetTimer(timer *time.Timer, timeout time.Duration) {
