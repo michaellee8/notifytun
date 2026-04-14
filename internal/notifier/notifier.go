@@ -3,6 +3,7 @@ package notifier
 import (
 	"context"
 	"fmt"
+	"io"
 	"runtime"
 )
 
@@ -16,6 +17,12 @@ type Notification struct {
 // Notifier delivers a notification to the local machine.
 type Notifier interface {
 	Notify(ctx context.Context, n Notification) error
+}
+
+// CommandOutputConfigurer lets notifiers that shell out expose the underlying
+// command's stdout and stderr to caller-provided writers.
+type CommandOutputConfigurer interface {
+	SetCommandOutput(stdout, stderr io.Writer)
 }
 
 // New builds a notifier for the selected backend.

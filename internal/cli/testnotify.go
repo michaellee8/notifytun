@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/michaellee8/notifytun/internal/notifier"
 	"github.com/spf13/cobra"
@@ -13,6 +13,20 @@ const (
 	testNotifyBody  = "Test notification - if you see this, your backend is working!"
 	testNotifyTool  = "test"
 )
+
+type outputTracker struct {
+	w              io.Writer
+	wrote          bool
+	endedWithNewln bool
+}
+
+func (o *outputTracker) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		o.wrote = true
+		o.endedWithNewln = p[len(p)-1] == '\n'
+	}
+	return o.w.Write(p)
+}
 
 // NewTestNotifyCmd fires a sample local notification to verify the configured backend.
 func NewTestNotifyCmd() *cobra.Command {
@@ -28,9 +42,16 @@ func NewTestNotifyCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			stdout := cmd.OutOrStdout()
+			var tracker *outputTracker
+
 			n, err := notifier.New(backend, notifyCmd)
 			if err != nil {
 				return fmt.Errorf("init notifier: %w", err)
+			}
+			if outputConfigurer, ok := n.(notifier.CommandOutputConfigurer); ok {
+				tracker = &outputTracker{w: stdout}
+				outputConfigurer.SetCommandOutput(tracker, cmd.ErrOrStderr())
 			}
 
 			notification := notifier.Notification{
@@ -43,19 +64,11 @@ func NewTestNotifyCmd() *cobra.Command {
 				return fmt.Errorf("notification failed: %w", err)
 			}
 
-			if _, ok := n.(*notifier.Generic); ok {
-				payload, err := json.Marshal(map[string]string{
-					"title": notification.Title,
-					"body":  notification.Body,
-					"tool":  notification.Tool,
-				})
-				if err != nil {
-					return fmt.Errorf("marshal notification payload: %w", err)
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), string(payload))
+			if tracker != nil && tracker.wrote && !tracker.endedWithNewln {
+				fmt.Fprintln(stdout)
 			}
 
-			fmt.Fprintln(cmd.OutOrStdout(), "Test notification sent successfully.")
+			fmt.Fprintln(stdout, "Test notification sent successfully.")
 			return nil
 		},
 	}
