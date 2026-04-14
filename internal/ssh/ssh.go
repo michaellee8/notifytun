@@ -111,14 +111,30 @@ func Connect(ctx context.Context, cfg ConnConfig, remoteCmd string) (*Session, e
 		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
 	}
 
-	clientConn, chans, reqs, err := gossh.NewClientConn(conn, addr, sshCfg)
+	handshake, err := runSSHOperationWithContext(ctx, func() {
+		_ = conn.Close()
+	}, func() (clientHandshake, error) {
+		clientConn, chans, reqs, err := gossh.NewClientConn(conn, addr, sshCfg)
+		if err != nil {
+			return clientHandshake{}, err
+		}
+		return clientHandshake{
+			conn:  clientConn,
+			chans: chans,
+			reqs:  reqs,
+		}, nil
+	})
 	if err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("ssh dial %s: %w", addr, err)
+		return nil, fmt.Errorf("ssh handshake %s: %w", addr, err)
 	}
 
-	client := gossh.NewClient(clientConn, chans, reqs)
-	session, err := client.NewSession()
+	client := gossh.NewClient(handshake.conn, handshake.chans, handshake.reqs)
+	session, err := runSSHOperationWithContext(ctx, func() {
+		_ = client.Close()
+	}, func() (*gossh.Session, error) {
+		return client.NewSession()
+	})
 	if err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("new session: %w", err)
@@ -138,7 +154,13 @@ func Connect(ctx context.Context, cfg ConnConfig, remoteCmd string) (*Session, e
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	if err := session.Start(remoteCmd); err != nil {
+	_, err = runSSHOperationWithContext(ctx, func() {
+		_ = session.Close()
+		_ = client.Close()
+	}, func() (struct{}, error) {
+		return struct{}{}, session.Start(remoteCmd)
+	})
+	if err != nil {
 		_ = session.Close()
 		_ = client.Close()
 		return nil, fmt.Errorf("start remote command: %w", err)
@@ -184,6 +206,12 @@ type Backoff struct {
 	current time.Duration
 }
 
+type clientHandshake struct {
+	conn  gossh.Conn
+	chans <-chan gossh.NewChannel
+	reqs  <-chan *gossh.Request
+}
+
 // NewBackoff creates a backoff starting at 1 second.
 func NewBackoff() *Backoff {
 	return &Backoff{current: initialBackoff}
@@ -207,13 +235,14 @@ func (b *Backoff) Reset() {
 func buildAuthMethods(keyPath string) ([]gossh.AuthMethod, func(), error) {
 	var methods []gossh.AuthMethod
 	var cleanupFns []func()
+	seenKeyPaths := make(map[string]struct{})
 
 	if keyPath != "" {
+		seenKeyPaths[keyPath] = struct{}{}
 		signer, err := loadSignerFromFile(keyPath)
-		if err != nil {
-			return nil, func() {}, err
+		if err == nil {
+			methods = append(methods, gossh.PublicKeys(signer))
 		}
-		methods = append(methods, gossh.PublicKeys(signer))
 	}
 
 	if agentMethod, cleanup, err := loadAgentAuthMethod(); err == nil && agentMethod != nil {
@@ -221,14 +250,16 @@ func buildAuthMethods(keyPath string) ([]gossh.AuthMethod, func(), error) {
 		cleanupFns = append(cleanupFns, cleanup)
 	}
 
-	if keyPath == "" {
-		for _, path := range defaultKeyPaths() {
-			signer, err := loadSignerFromFile(path)
-			if err != nil {
-				continue
-			}
-			methods = append(methods, gossh.PublicKeys(signer))
+	for _, path := range defaultKeyPaths() {
+		if _, ok := seenKeyPaths[path]; ok {
+			continue
 		}
+
+		signer, err := loadSignerFromFile(path)
+		if err != nil {
+			continue
+		}
+		methods = append(methods, gossh.PublicKeys(signer))
 	}
 
 	cleanup := func() {
@@ -240,6 +271,28 @@ func buildAuthMethods(keyPath string) ([]gossh.AuthMethod, func(), error) {
 	}
 
 	return methods, cleanup, nil
+}
+
+func runSSHOperationWithContext[T any](ctx context.Context, cancel func(), fn func() (T, error)) (T, error) {
+	var zero T
+	if err := ctx.Err(); err != nil {
+		cancel()
+		return zero, err
+	}
+
+	stop := context.AfterFunc(ctx, cancel)
+	result, err := fn()
+	stop()
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		cancel()
+		return zero, ctxErr
+	}
+	if err != nil {
+		return zero, err
+	}
+
+	return result, nil
 }
 
 func loadKnownHosts() (gossh.HostKeyCallback, error) {

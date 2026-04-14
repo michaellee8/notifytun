@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tunnelssh "github.com/michaellee8/notifytun/internal/ssh"
 	"golang.org/x/crypto/ssh"
@@ -172,6 +173,183 @@ func TestConnectUsesSSHAgentAuth(t *testing.T) {
 	}
 }
 
+func TestConnectFallsBackToDefaultKeyWhenConfiguredIdentityFileIsMissing(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	defaultKey := newTestPrivateKey(t)
+	defaultKeyPath := filepath.Join(sshDir, "id_ed25519")
+	if err := writePrivateKey(defaultKeyPath, defaultKey); err != nil {
+		t.Fatalf("writePrivateKey(default): %v", err)
+	}
+
+	hostKey := newTestPrivateKey(t)
+	hostSigner, err := ssh.NewSignerFromKey(hostKey)
+	if err != nil {
+		t.Fatalf("NewSignerFromKey(host): %v", err)
+	}
+	clientSigner, err := ssh.NewSignerFromKey(defaultKey)
+	if err != nil {
+		t.Fatalf("NewSignerFromKey(client): %v", err)
+	}
+
+	addr, serverDone := startTestSSHServer(t, hostSigner, clientSigner.PublicKey())
+	if err := writeKnownHostsFile(filepath.Join(sshDir, "known_hosts"), addr, hostSigner.PublicKey()); err != nil {
+		t.Fatalf("writeKnownHostsFile: %v", err)
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config")
+	config := "\nHost fallbackvm\n    HostName " + host + "\n    User agentuser\n    Port " + port + "\n    IdentityFile ~/.ssh/missing_identity\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+
+	cfg := tunnelssh.ResolveTarget("fallbackvm", "", configPath)
+	sess, err := tunnelssh.Connect(context.Background(), cfg, "echo ok")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer sess.Close()
+
+	stdout, err := io.ReadAll(sess.Stdout)
+	if err != nil {
+		t.Fatalf("ReadAll(stdout): %v", err)
+	}
+	if err := sess.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if got := strings.TrimSpace(string(stdout)); got != "ok" {
+		t.Fatalf("expected stdout %q, got %q", "ok", got)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server error: %v", err)
+	}
+}
+
+func TestConnectCancelsDuringHandshake(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	keyPath := filepath.Join(t.TempDir(), "id_ed25519")
+	if err := writeTestPrivateKey(keyPath); err != nil {
+		t.Fatalf("writeTestPrivateKey: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "known_hosts"), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile(known_hosts): %v", err)
+	}
+
+	addr, serverDone := startStalledHandshakeServer(t, 300*time.Millisecond)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = tunnelssh.Connect(ctx, tunnelssh.ConnConfig{
+		Host:    host,
+		Port:    port,
+		User:    "canceluser",
+		KeyPath: keyPath,
+	}, "echo ok")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("expected cancellation before stalled handshake released, took %s", elapsed)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server error: %v", err)
+	}
+}
+
+func TestConnectCancelsDuringRemoteCommandStart(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	clientKey := newTestPrivateKey(t)
+	keyPath := filepath.Join(t.TempDir(), "id_ed25519")
+	if err := writePrivateKey(keyPath, clientKey); err != nil {
+		t.Fatalf("writePrivateKey: %v", err)
+	}
+
+	hostKey := newTestPrivateKey(t)
+	hostSigner, err := ssh.NewSignerFromKey(hostKey)
+	if err != nil {
+		t.Fatalf("NewSignerFromKey(host): %v", err)
+	}
+	clientSigner, err := ssh.NewSignerFromKey(clientKey)
+	if err != nil {
+		t.Fatalf("NewSignerFromKey(client): %v", err)
+	}
+
+	addr, serverDone := startTestSSHServerWithHandler(t, hostSigner, clientSigner.PublicKey(), handleDelayedExec(300*time.Millisecond))
+	if err := writeKnownHostsFile(filepath.Join(sshDir, "known_hosts"), addr, hostSigner.PublicKey()); err != nil {
+		t.Fatalf("writeKnownHostsFile: %v", err)
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	sess, err := tunnelssh.Connect(ctx, tunnelssh.ConnConfig{
+		Host:    host,
+		Port:    port,
+		User:    "agentuser",
+		KeyPath: keyPath,
+	}, "echo ok")
+	elapsed := time.Since(start)
+	if sess != nil {
+		_ = sess.Close()
+	}
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("expected cancellation before delayed exec reply, took %s", elapsed)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server error: %v", err)
+	}
+}
+
 func TestBackoffSequence(t *testing.T) {
 	b := tunnelssh.NewBackoff()
 	expected := []int{1, 2, 4, 8, 16, 30, 30, 30}
@@ -196,18 +374,7 @@ func TestBackoffReset(t *testing.T) {
 }
 
 func writeTestPrivateKey(path string) error {
-	privateKey := newTestPrivateKey(nil)
-	keyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		return err
-	}
-
-	block := &pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: keyBytes,
-	}
-
-	return os.WriteFile(path, pem.EncodeToMemory(block), 0o600)
+	return writePrivateKey(path, newTestPrivateKey(nil))
 }
 
 func newTestPrivateKey(t *testing.T) ed25519.PrivateKey {
@@ -259,6 +426,10 @@ func startTestAgent(t *testing.T, socketPath string, key ed25519.PrivateKey) {
 }
 
 func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, authorizedKey ssh.PublicKey) (string, <-chan error) {
+	return startTestSSHServerWithHandler(t, hostSigner, authorizedKey, handleSession)
+}
+
+func startTestSSHServerWithHandler(t *testing.T, hostSigner ssh.Signer, authorizedKey ssh.PublicKey, handler func(ssh.Channel, <-chan *ssh.Request) error) (string, <-chan error) {
 	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -316,7 +487,7 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, authorizedKey ssh.P
 				return
 			}
 
-			if err := handleSession(channel, requests); err != nil {
+			if err := handler(channel, requests); err != nil {
 				done <- err
 				return
 			}
@@ -329,6 +500,79 @@ func startTestSSHServer(t *testing.T, hostSigner ssh.Signer, authorizedKey ssh.P
 	}()
 
 	return listener.Addr().String(), done
+}
+
+func startStalledHandshakeServer(t *testing.T, delay time.Duration) (string, <-chan error) {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen stalled ssh server: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		defer close(done)
+		defer listener.Close()
+
+		conn, err := listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				done <- nil
+				return
+			}
+			done <- err
+			return
+		}
+		defer conn.Close()
+
+		time.Sleep(delay)
+		done <- nil
+	}()
+
+	return listener.Addr().String(), done
+}
+
+func handleDelayedExec(delay time.Duration) func(ssh.Channel, <-chan *ssh.Request) error {
+	return func(channel ssh.Channel, requests <-chan *ssh.Request) error {
+		defer channel.Close()
+
+		for req := range requests {
+			switch req.Type {
+			case "exec":
+				time.Sleep(delay)
+				if err := req.Reply(true, nil); err != nil {
+					return nil
+				}
+				return nil
+			default:
+				if err := req.Reply(false, nil); err != nil {
+					return err
+				}
+			}
+		}
+
+		return nil
+	}
+}
+
+func writePrivateKey(path string, privateKey ed25519.PrivateKey) error {
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		return err
+	}
+
+	block := &pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: keyBytes,
+	}
+
+	return os.WriteFile(path, pem.EncodeToMemory(block), 0o600)
+}
+
+func writeKnownHostsFile(path, addr string, publicKey ssh.PublicKey) error {
+	line := knownhosts.Line([]string{knownhosts.Normalize(addr)}, publicKey)
+	return os.WriteFile(path, []byte(line+"\n"), 0o600)
 }
 
 func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) error {
