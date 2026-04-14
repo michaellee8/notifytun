@@ -120,60 +120,39 @@ func TestIntegrationSocketWakeupReachesAttachListener(t *testing.T) {
 	assertUndeliveredCount(t, dbPath, 0)
 }
 
-func TestIntegrationProtocolOverPipeJSONL(t *testing.T) {
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	defer reader.Close()
+func TestIntegrationProtocolOverPipeJSONLFromAttach(t *testing.T) {
+	dbPath, socketPath := tempIntegrationPaths(t)
 
-	wantNotif := &proto.NotifMessage{
-		ID:        7,
-		Title:     "Pipe notif",
-		Body:      "JSONL over stdio",
-		Tool:      "codex",
-		CreatedAt: "2026-04-14T00:00:00Z",
-	}
-	wantHeartbeat := &proto.HeartbeatMessage{
-		Ts: "2026-04-14T00:00:05Z",
+	emitNotification(t, dbPath, socketPath, "Frame one", "Line 1\nLine 2", "codex")
+	emitNotification(t, dbPath, socketPath, "Frame two", `Body with "quotes"`, "claude-code")
+
+	session := startAttach(t, dbPath, socketPath)
+	firstLine := session.ReadRawLine(t, time.Second)
+	secondLine := session.ReadRawLine(t, time.Second)
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close(attach): %v", err)
 	}
 
-	writeErr := make(chan error, 1)
-	go func() {
-		defer writer.Close()
-
-		for _, msg := range []any{wantNotif, wantHeartbeat} {
-			line, err := proto.Encode(msg)
-			if err != nil {
-				writeErr <- err
-				return
-			}
-			if _, err := writer.Write(line); err != nil {
-				writeErr <- err
-				return
-			}
+	for i, line := range [][]byte{firstLine, secondLine} {
+		if len(line) == 0 || line[len(line)-1] != '\n' {
+			t.Fatalf("frame %d missing newline terminator: %q", i, string(line))
 		}
-
-		writeErr <- nil
-	}()
-
-	pipeReader := bufio.NewReader(reader)
-	notif := mustNotifMessage(t, readDecodedLine(t, pipeReader, time.Second))
-	heartbeat, ok := readDecodedLine(t, pipeReader, time.Second).(*proto.HeartbeatMessage)
-	if !ok {
-		t.Fatalf("expected *proto.HeartbeatMessage from pipe")
+		if bytes.Count(line, []byte{'\n'}) != 1 {
+			t.Fatalf("frame %d should contain exactly one transport newline, got %q", i, string(line))
+		}
 	}
 
-	if notif.ID != wantNotif.ID || notif.Title != wantNotif.Title || notif.Body != wantNotif.Body || notif.Tool != wantNotif.Tool {
-		t.Fatalf("unexpected notif round-trip over pipe: want %+v got %+v", wantNotif, notif)
+	firstNotif := mustNotifMessage(t, decodeJSONLFrame(t, firstLine))
+	secondNotif := mustNotifMessage(t, decodeJSONLFrame(t, secondLine))
+
+	if firstNotif.Title != "Frame one" || firstNotif.Body != "Line 1\nLine 2" || firstNotif.Tool != "codex" {
+		t.Fatalf("unexpected first frame from attach: %+v", firstNotif)
 	}
-	if heartbeat.Ts != wantHeartbeat.Ts {
-		t.Fatalf("unexpected heartbeat round-trip over pipe: want %+v got %+v", wantHeartbeat, heartbeat)
+	if secondNotif.Title != "Frame two" || secondNotif.Body != `Body with "quotes"` || secondNotif.Tool != "claude-code" {
+		t.Fatalf("unexpected second frame from attach: %+v", secondNotif)
 	}
 
-	if err := <-writeErr; err != nil {
-		t.Fatalf("write pipe JSONL: %v", err)
-	}
+	assertUndeliveredCount(t, dbPath, 0)
 }
 
 type attachSession struct {
@@ -233,6 +212,12 @@ func (s *attachSession) ReadMessage(t *testing.T, timeout time.Duration) any {
 	return readDecodedLine(t, s.reader, timeout)
 }
 
+func (s *attachSession) ReadRawLine(t *testing.T, timeout time.Duration) []byte {
+	t.Helper()
+
+	return readJSONLLine(t, s.reader, timeout)
+}
+
 func (s *attachSession) Close() error {
 	var closeErr error
 
@@ -289,42 +274,47 @@ func emitNotification(t *testing.T, dbPath, socketPath, title, body, tool string
 func readDecodedLine(t *testing.T, reader *bufio.Reader, timeout time.Duration) any {
 	t.Helper()
 
+	return decodeJSONLFrame(t, readJSONLLine(t, reader, timeout))
+}
+
+func readJSONLLine(t *testing.T, reader *bufio.Reader, timeout time.Duration) []byte {
+	t.Helper()
+
 	type result struct {
-		msg any
-		err error
+		line []byte
+		err  error
 	}
 
 	resultCh := make(chan result, 1)
 	go func() {
 		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			resultCh <- result{err: err}
-			return
-		}
-
-		msg, err := proto.Decode(bytes.TrimSuffix(line, []byte{'\n'}))
-		if err != nil {
-			resultCh <- result{err: err}
-			return
-		}
-		if msg == nil {
-			resultCh <- result{err: fmt.Errorf("decoded nil message from %q", string(line))}
-			return
-		}
-
-		resultCh <- result{msg: msg}
+		resultCh <- result{line: line, err: err}
 	}()
 
 	select {
 	case res := <-resultCh:
 		if res.err != nil {
-			t.Fatalf("read decoded line: %v", res.err)
+			t.Fatalf("read JSONL line: %v", res.err)
 		}
-		return res.msg
+		return res.line
 	case <-time.After(timeout):
-		t.Fatalf("timed out waiting for protocol message after %s", timeout)
+		t.Fatalf("timed out waiting for protocol line after %s", timeout)
 		return nil
 	}
+}
+
+func decodeJSONLFrame(t *testing.T, line []byte) any {
+	t.Helper()
+
+	msg, err := proto.Decode(bytes.TrimSuffix(line, []byte{'\n'}))
+	if err != nil {
+		t.Fatalf("decode JSONL frame: %v", err)
+	}
+	if msg == nil {
+		t.Fatalf("decoded nil message from %q", string(line))
+	}
+
+	return msg
 }
 
 func mustNotifMessage(t *testing.T, msg any) *proto.NotifMessage {
