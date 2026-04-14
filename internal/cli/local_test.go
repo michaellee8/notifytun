@@ -368,7 +368,10 @@ func TestProcessStreamAcceptsLargeJSONLFrames(t *testing.T) {
 
 	n := &recordingNotifier{}
 	dispatcher := newTestDispatcher(t, context.Background(), n)
-	err = processStreamWithTimeout(context.Background(), strings.NewReader(string(notif)), dispatcher, 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err = processStream(ctx, strings.NewReader(string(notif)), dispatcher)
 	if err == nil || !strings.Contains(err.Error(), "stream EOF") {
 		t.Fatalf("expected EOF error, got %v", err)
 	}
