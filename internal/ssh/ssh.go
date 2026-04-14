@@ -82,10 +82,12 @@ type Session struct {
 
 // Connect establishes an SSH connection and starts a remote command.
 func Connect(ctx context.Context, cfg ConnConfig, remoteCmd string) (*Session, error) {
-	authMethods, err := buildAuthMethods(cfg.KeyPath)
+	authMethods, authCleanup, err := buildAuthMethods(cfg.KeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("build auth methods: %w", err)
 	}
+	defer authCleanup()
+
 	if len(authMethods) == 0 {
 		return nil, fmt.Errorf("no SSH authentication methods available")
 	}
@@ -202,19 +204,21 @@ func (b *Backoff) Reset() {
 	b.current = initialBackoff
 }
 
-func buildAuthMethods(keyPath string) ([]gossh.AuthMethod, error) {
+func buildAuthMethods(keyPath string) ([]gossh.AuthMethod, func(), error) {
 	var methods []gossh.AuthMethod
+	var cleanupFns []func()
 
 	if keyPath != "" {
 		signer, err := loadSignerFromFile(keyPath)
 		if err != nil {
-			return nil, err
+			return nil, func() {}, err
 		}
 		methods = append(methods, gossh.PublicKeys(signer))
 	}
 
-	if agentMethod, err := loadAgentAuthMethod(); err == nil && agentMethod != nil {
+	if agentMethod, cleanup, err := loadAgentAuthMethod(); err == nil && agentMethod != nil {
 		methods = append(methods, agentMethod)
+		cleanupFns = append(cleanupFns, cleanup)
 	}
 
 	if keyPath == "" {
@@ -227,7 +231,15 @@ func buildAuthMethods(keyPath string) ([]gossh.AuthMethod, error) {
 		}
 	}
 
-	return methods, nil
+	cleanup := func() {
+		for i := len(cleanupFns) - 1; i >= 0; i-- {
+			if cleanupFns[i] != nil {
+				cleanupFns[i]()
+			}
+		}
+	}
+
+	return methods, cleanup, nil
 }
 
 func loadKnownHosts() (gossh.HostKeyCallback, error) {
@@ -320,27 +332,23 @@ func loadSignerFromFile(path string) (gossh.Signer, error) {
 	return signer, nil
 }
 
-func loadAgentAuthMethod() (gossh.AuthMethod, error) {
+func loadAgentAuthMethod() (gossh.AuthMethod, func(), error) {
 	agentSock := os.Getenv("SSH_AUTH_SOCK")
 	if agentSock == "" {
-		return nil, nil
+		return nil, func() {}, nil
 	}
 
 	conn, err := net.Dial("unix", agentSock)
 	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	signers, err := agent.NewClient(conn).Signers()
-	if err != nil {
-		return nil, err
-	}
-	if len(signers) == 0 {
-		return nil, nil
+		return nil, func() {}, err
 	}
 
-	return gossh.PublicKeys(signers...), nil
+	agentClient := agent.NewClient(conn)
+	cleanup := func() {
+		_ = conn.Close()
+	}
+
+	return gossh.PublicKeysCallback(agentClient.Signers), cleanup, nil
 }
 
 func defaultKeyPaths() []string {
