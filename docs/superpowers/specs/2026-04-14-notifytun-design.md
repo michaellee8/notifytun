@@ -213,7 +213,7 @@ TCP keepalive alone is unreliable for detecting dead SSH sessions through NAT/fi
 1. Reads lines from SSH stdout
 2. `notif` -> pass to notifier backend
 3. `heartbeat` -> reset the 45s dead-connection timer
-4. Parse error or EOF -> connection dead, begin reconnect
+4. Malformed JSONL line -> log warning and continue; EOF -> connection dead, begin reconnect
 
 ## 6. SSH Transport
 
@@ -221,7 +221,7 @@ TCP keepalive alone is unreliable for detecting dead SSH sessions through NAT/fi
 
 Uses `golang.org/x/crypto/ssh` as the SSH client library, with `github.com/kevinburke/ssh_config` for parsing `~/.ssh/config`.
 
-1. `local` reads `~/.ssh/config` to resolve `--target` into host, port, user, identity file, proxy settings
+1. `local` reads `~/.ssh/config` to resolve `--target` into host, port, user, and identity file
 2. Authentication priority: explicit `--ssh-key` flag -> keys from SSH config -> SSH agent (`SSH_AUTH_SOCK`)
 3. Opens an SSH session, runs `sh -lc "notifytun attach"` as a remote command
 4. Grabs the session's stdout pipe as the JSONL reader
@@ -245,7 +245,7 @@ Reset to 1s after a successful connection that lasts more than 60 seconds.
 Directives supported via `kevinburke/ssh_config`:
 - `HostName`, `Port`, `User`, `IdentityFile` — core resolution
 
-ProxyJump requires recursive SSH connection through an intermediate host. Supported on a best-effort basis in v1; if implementation proves too complex, document as a known limitation and suggest users set up a `ProxyCommand` as a workaround.
+`ProxyJump` and `ProxyCommand` are out of scope for v1. Users who need jump-host support must handle that separately until notifytun adds native proxy support.
 
 ### Known Hosts
 
@@ -335,29 +335,27 @@ Auto-configures AI tool hooks on the remote VM.
 | Tool | Detection | Hook Mechanism |
 |---|---|---|
 | Claude Code | `claude` or `claude-code` in PATH | `~/.claude/settings.json` hooks array |
-| Codex CLI | `codex` in PATH | Codex hook config (research at implementation time) |
-| Gemini CLI | `gemini` in PATH | Gemini hook config (research at implementation time) |
-| OpenCode | `opencode` in PATH | OpenCode hook config (research at implementation time) |
+| Codex CLI | `codex` in PATH | Detection only in v1; preview as detected-but-unsupported, no file changes |
+| Gemini CLI | `gemini` in PATH | Detection only in v1; preview as detected-but-unsupported, no file changes |
+| OpenCode | `opencode` in PATH | Detection only in v1; preview as detected-but-unsupported, no file changes |
 
-All hooks call `notifytun emit --tool <name> --title "Task complete"`.
+Any hook entries written by v1 call `notifytun emit --tool <name> --title "Task complete"`.
 
 ### Behavior
 
 1. Scan PATH for known tool binaries
-2. For each detected tool, check if hooks are already configured
+2. For each detected tool with supported hook setup, check if hooks are already configured
 3. Show preview:
    ```
    Detected tools:
-     * Claude Code -- will add stop hook to ~/.claude/settings.json
-     * Codex CLI -- will add hook to ~/.codex/config.toml
-     x Gemini CLI -- not found
-     x OpenCode -- not found
+     * Claude Code -- will add Stop hook to ~/.claude/settings.json
+     * Codex CLI -- detected but hook setup not supported in v1
 
    Apply? [Y/n]
    ```
 4. `--dry-run` shows preview without applying
 5. Idempotent: checks for existing `notifytun` references before adding
-6. Gracefully skip tools whose hook mechanism hasn't been implemented yet
+6. Gracefully skip detected tools whose hook mechanism is not implemented in v1
 
 ## 10. Package Layout
 
@@ -388,7 +386,9 @@ github.com/michaellee8/notifytun/
     setup/                    # remote-setup tool detection & hook writing
       setup.go
   docs/
-    rough-spec.md
+    superpowers/
+      specs/
+      plans/
   go.mod
   go.sum
   config.example.toml

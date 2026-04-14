@@ -2048,11 +2048,13 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -2089,7 +2091,12 @@ func NewLocalCmd() *cobra.Command {
 				home, _ := os.UserHomeDir()
 				viper.SetConfigFile(home + "/.notifytun/config.toml")
 			}
-			viper.ReadInConfig() // ignore error — config is optional
+			if err := viper.ReadInConfig(); err != nil {
+				var notFound viper.ConfigFileNotFoundError
+				if !errors.As(err, &notFound) {
+					return fmt.Errorf("read config: %w", err)
+				}
+			}
 
 			// Config values as fallbacks
 			if target == "" {
@@ -2140,7 +2147,7 @@ func runLocal(ctx context.Context, target, remoteBin, backend, notifyCmd, sshKey
 	}
 
 	backoff := tunnelssh.NewBackoff()
-	remoteCommand := fmt.Sprintf("sh -lc '%s attach'", remoteBin)
+	remoteCommand := "sh -lc " + strconv.Quote(remoteBin+" attach")
 
 	for {
 		if ctx.Err() != nil {
@@ -2404,6 +2411,7 @@ package setup_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/michaellee8/notifytun/internal/setup"
@@ -2436,8 +2444,14 @@ func TestDetectTools(t *testing.T) {
 
 func TestClaudeHookGeneration(t *testing.T) {
 	hook := setup.GenerateClaudeHook()
-	if hook == "" {
-		t.Fatal("expected non-empty Claude hook config")
+	if !strings.Contains(hook, `"Stop"`) {
+		t.Fatal("expected Stop hook in generated config")
+	}
+	if strings.Contains(hook, `"Notification"`) {
+		t.Fatal("generated config should not add Claude Notification hooks")
+	}
+	if !strings.Contains(hook, "Task complete") {
+		t.Fatal("expected generated hook to emit Task complete notifications")
 	}
 }
 
@@ -2469,11 +2483,61 @@ func TestClaudeHookIdempotent(t *testing.T) {
 func TestDetectAlreadyConfigured(t *testing.T) {
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "settings.json")
-	os.WriteFile(settingsPath, []byte(`{"hooks":{"Stop":[{"command":"notifytun emit"}]}}`), 0o644)
+	os.WriteFile(settingsPath, []byte(`{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit --tool claude-code --title 'Task complete'"
+          }
+        ]
+      }
+    ]
+  }
+}`), 0o644)
 
 	configured := setup.IsClaudeConfigured(settingsPath)
 	if !configured {
 		t.Fatal("expected Claude to be detected as already configured")
+	}
+}
+
+func TestApplyClaudeHookPreservesExistingStopHooks(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	os.WriteFile(settingsPath, []byte(`{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "existing",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo existing"
+          }
+        ]
+      }
+    ]
+  }
+}`), 0o644)
+
+	if err := setup.ApplyClaudeHook(settingsPath); err != nil {
+		t.Fatalf("ApplyClaudeHook: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "echo existing") {
+		t.Fatal("expected existing Stop hook to be preserved")
+	}
+	if strings.Count(content, "notifytun emit --tool claude-code --title 'Task complete'") != 1 {
+		t.Fatal("expected exactly one notifytun Stop hook after apply")
 	}
 }
 ```
@@ -2498,6 +2562,8 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+const claudeHookCommand = "notifytun emit --tool claude-code --title 'Task complete'"
 
 // Tool represents a detected AI coding tool.
 type Tool struct {
@@ -2561,18 +2627,7 @@ func GenerateClaudeHook() string {
         "hooks": [
           {
             "type": "command",
-            "command": "notifytun emit --tool claude-code --title 'Claude Code' --body 'Claude finished a turn'"
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "notifytun emit --tool claude-code --title 'Claude Code' --body 'Claude Code needs your attention'"
+            "command": "notifytun emit --tool claude-code --title 'Task complete'"
           }
         ]
       }
@@ -2587,7 +2642,30 @@ func IsClaudeConfigured(settingsPath string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(data), "notifytun")
+
+	var settings map[string]interface{}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return false
+	}
+
+	hooksValue, ok := settings["hooks"]
+	if !ok {
+		return false
+	}
+	hooks, ok := hooksValue.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	stopValue, ok := hooks["Stop"]
+	if !ok {
+		return false
+	}
+	stopEntries, ok := stopValue.([]interface{})
+	if !ok {
+		return false
+	}
+
+	return hasClaudeStopHook(stopEntries)
 }
 
 // ApplyClaudeHook writes or merges notifytun hooks into Claude Code settings.
@@ -2603,42 +2681,45 @@ func ApplyClaudeHook(settingsPath string) error {
 		if err := json.Unmarshal(data, &settings); err != nil {
 			return fmt.Errorf("parse existing settings: %w", err)
 		}
-	} else {
+	} else if os.IsNotExist(err) {
 		settings = map[string]interface{}{}
-	}
-
-	// Build hook entries
-	hookEntry := []interface{}{
-		map[string]interface{}{
-			"matcher": "",
-			"hooks": []interface{}{
-				map[string]interface{}{
-					"type":    "command",
-					"command": "notifytun emit --tool claude-code --title 'Claude Code' --body 'Task completed'",
-				},
-			},
-		},
-	}
-
-	notifHookEntry := []interface{}{
-		map[string]interface{}{
-			"matcher": "",
-			"hooks": []interface{}{
-				map[string]interface{}{
-					"type":    "command",
-					"command": "notifytun emit --tool claude-code --title 'Claude Code' --body 'Claude Code needs your attention'",
-				},
-			},
-		},
+	} else {
+		return fmt.Errorf("read settings: %w", err)
 	}
 
 	// Merge into settings
-	hooks, ok := settings["hooks"].(map[string]interface{})
-	if !ok {
-		hooks = map[string]interface{}{}
+	hooks := map[string]interface{}{}
+	if existing, ok := settings["hooks"]; ok {
+		typed, ok := existing.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected hooks format: want object")
+		}
+		hooks = typed
 	}
-	hooks["Stop"] = hookEntry
-	hooks["Notification"] = notifHookEntry
+
+	var stopEntries []interface{}
+	if existing, ok := hooks["Stop"]; ok {
+		typed, ok := existing.([]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected hooks.Stop format: want array")
+		}
+		stopEntries = typed
+		if hasClaudeStopHook(stopEntries) {
+			return nil
+		}
+	}
+
+	stopEntries = append(stopEntries, map[string]interface{}{
+		"matcher": "",
+		"hooks": []interface{}{
+			map[string]interface{}{
+				"type":    "command",
+				"command": claudeHookCommand,
+			},
+		},
+	})
+
+	hooks["Stop"] = stopEntries
 	settings["hooks"] = hooks
 
 	// Write back
@@ -2652,6 +2733,30 @@ func ApplyClaudeHook(settingsPath string) error {
 	return os.WriteFile(settingsPath, output, 0o644)
 }
 
+func hasClaudeStopHook(entries []interface{}) bool {
+	for _, entry := range entries {
+		entryMap, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		hookList, ok := entryMap["hooks"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, hook := range hookList {
+			hookMap, ok := hook.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			command, _ := hookMap["command"].(string)
+			if command == claudeHookCommand {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Preview returns a human-readable summary of what remote-setup would do.
 func Preview(tools []Tool) string {
 	var sb strings.Builder
@@ -2661,9 +2766,9 @@ func Preview(tools []Tool) string {
 			if tool.Configured {
 				sb.WriteString(fmt.Sprintf("  * %s -- already configured\n", tool.Name))
 			} else if tool.Supported {
-				sb.WriteString(fmt.Sprintf("  * %s -- will configure hooks\n", tool.Name))
+				sb.WriteString(fmt.Sprintf("  * %s -- will add Stop hook\n", tool.Name))
 			} else {
-				sb.WriteString(fmt.Sprintf("  * %s -- detected but hook setup not yet supported\n", tool.Name))
+				sb.WriteString(fmt.Sprintf("  * %s -- detected but hook setup not supported in v1\n", tool.Name))
 			}
 		}
 	}
@@ -2674,7 +2779,7 @@ func Preview(tools []Tool) string {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/setup/ -v -count=1`
-Expected: All 4 tests PASS
+Expected: All 5 tests PASS
 
 - [ ] **Step 5: Implement the remote-setup CLI command**
 
@@ -2791,7 +2896,7 @@ func init() {
 - [ ] **Step 7: Build and verify**
 
 Run: `go build -o notifytun ./cmd/notifytun && ./notifytun remote-setup --dry-run`
-Expected: Output showing detected/not-detected tools with "(dry run)" message
+Expected: Output showing detected tools, unsupported-tool notices when applicable, and "(dry run — no changes applied)"
 
 - [ ] **Step 8: Commit**
 
