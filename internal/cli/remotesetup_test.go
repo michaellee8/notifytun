@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/michaellee8/notifytun/internal/setup"
 )
 
 func TestRemoteSetupDryRunPrintsPreview(t *testing.T) {
@@ -88,8 +90,8 @@ func TestRemoteSetupApplyConfiguresSupportedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(codex): %v", err)
 	}
-	if !strings.Contains(string(codexConfig), `notify = ["notifytun", "emit", "--tool", "codex"]`) {
-		t.Fatalf("expected Codex config to contain notify line, got %q", string(codexConfig))
+	if !setup.IsCodexConfigured(filepath.Join(home, ".codex", "config.toml")) {
+		t.Fatalf("expected Codex config to be structurally configured, got %q", string(codexConfig))
 	}
 }
 
@@ -204,8 +206,8 @@ func TestRemoteSetupContinuesAfterPerToolFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(codex): %v", err)
 	}
-	if !strings.Contains(string(codexConfig), `notify = ["notifytun", "emit", "--tool", "codex"]`) {
-		t.Fatalf("expected Codex config to contain notify line, got %q", string(codexConfig))
+	if !setup.IsCodexConfigured(filepath.Join(home, ".codex", "config.toml")) {
+		t.Fatalf("expected Codex config to be structurally configured, got %q", string(codexConfig))
 	}
 }
 

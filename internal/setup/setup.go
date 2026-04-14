@@ -6,8 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
+
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 const (
@@ -278,239 +279,89 @@ func hasHookCommand(entries []any, want string) bool {
 
 // IsCodexConfigured reports whether the notifytun notify hook is already present.
 func IsCodexConfigured(configPath string) bool {
-	data, err := os.ReadFile(configPath)
+	cfg, err := readCodexConfig(configPath)
 	if err != nil {
 		return false
 	}
-
-	notifyArgs, count := findRootNotifyAssignments(string(data))
-	return count == 1 && equalStringSlices(notifyArgs, codexNotifyCommand)
+	return codexNotifyConfigured(cfg)
 }
 
 // ApplyCodexNotifyConfig writes the notifytun notify config at the TOML root.
 func ApplyCodexNotifyConfig(configPath string) error {
-	data, err := os.ReadFile(configPath)
-	existing := ""
-	if err == nil {
-		existing = string(data)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read Codex config: %w", err)
+	cfg, err := readCodexConfig(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			cfg = map[string]any{}
+		} else {
+			return err
+		}
 	}
 
-	updated := upsertRootNotify(existing)
-	if existing == updated {
+	if codexNotifyConfigured(cfg) {
 		return nil
 	}
+	cfg["notify"] = append([]string(nil), codexNotifyCommand...)
 
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		return fmt.Errorf("create Codex config dir: %w", err)
 	}
 
+	updated, err := toml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal Codex config: %w", err)
+	}
 	if err := os.WriteFile(configPath, []byte(updated), 0o644); err != nil {
 		return fmt.Errorf("write Codex config: %w", err)
 	}
 	return nil
 }
 
-func findRootNotifyAssignments(content string) ([]string, int) {
-	rootLines, _ := splitTOMLRoot(content)
-
-	count := 0
-	var notifyArgs []string
-	for _, line := range rootLines {
-		key, value, ok := parseBareAssignment(line)
-		if !ok || key != "notify" {
-			continue
-		}
-
-		count++
-		if count != 1 {
-			continue
-		}
-
-		args, ok := parseStringArray(value)
-		if ok {
-			notifyArgs = args
-		}
+func readCodexConfig(configPath string) (map[string]any, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
 	}
 
-	return notifyArgs, count
+	var cfg map[string]any
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse Codex config: %w", err)
+	}
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	return cfg, nil
 }
 
-func upsertRootNotify(content string) string {
-	rootLines, bodyLines := splitTOMLRoot(content)
-	rootLines = replaceRootNotify(rootLines)
-	return joinTOML(rootLines, bodyLines)
-}
-
-func replaceRootNotify(rootLines []string) []string {
-	rootLines = trimTrailingBlankLines(rootLines)
-
-	var updated []string
-	replaced := false
-	for _, line := range rootLines {
-		key, _, ok := parseBareAssignment(line)
-		if ok && key == "notify" {
-			if !replaced {
-				updated = append(updated, codexNotifyConfigLine)
-				replaced = true
-			}
-			continue
-		}
-		updated = append(updated, line)
-	}
-
-	if !replaced {
-		updated = append(updated, codexNotifyConfigLine)
-	}
-	return updated
-}
-
-func splitTOMLRoot(content string) ([]string, []string) {
-	normalized := strings.ReplaceAll(content, "\r\n", "\n")
-	normalized = strings.TrimSuffix(normalized, "\n")
-	if normalized == "" {
-		return nil, nil
-	}
-
-	lines := strings.Split(normalized, "\n")
-	firstTable := len(lines)
-	for i, line := range lines {
-		if isTOMLTableHeader(line) {
-			firstTable = i
-			break
-		}
-	}
-
-	rootLines := append([]string(nil), lines[:firstTable]...)
-	bodyLines := append([]string(nil), lines[firstTable:]...)
-	return rootLines, bodyLines
-}
-
-func joinTOML(rootLines, bodyLines []string) string {
-	rootLines = trimTrailingBlankLines(rootLines)
-
-	var lines []string
-	lines = append(lines, rootLines...)
-	if len(rootLines) > 0 && len(bodyLines) > 0 {
-		lines = append(lines, "")
-	}
-	lines = append(lines, bodyLines...)
-
-	if len(lines) == 0 {
-		return GenerateCodexNotifyConfig()
-	}
-	return strings.Join(lines, "\n") + "\n"
-}
-
-func trimTrailingBlankLines(lines []string) []string {
-	end := len(lines)
-	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
-		end--
-	}
-	return append([]string(nil), lines[:end]...)
-}
-
-func isTOMLTableHeader(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+func codexNotifyConfigured(cfg map[string]any) bool {
+	raw, ok := cfg["notify"]
+	if !ok {
 		return false
 	}
-	return strings.HasPrefix(trimmed, "[")
+
+	notifyArgs, ok := stringSlice(raw)
+	if !ok {
+		return false
+	}
+	return equalStringSlices(notifyArgs, codexNotifyCommand)
 }
 
-func parseBareAssignment(line string) (string, string, bool) {
-	trimmed := strings.TrimSpace(stripTOMLComment(line))
-	if trimmed == "" {
-		return "", "", false
-	}
-
-	equals := strings.Index(trimmed, "=")
-	if equals < 0 {
-		return "", "", false
-	}
-
-	key := strings.TrimSpace(trimmed[:equals])
-	if key == "" || strings.ContainsAny(key, ".\"'[]") {
-		return "", "", false
-	}
-
-	value := strings.TrimSpace(trimmed[equals+1:])
-	return key, value, true
-}
-
-func stripTOMLComment(line string) string {
-	inString := false
-	escaped := false
-	for i, r := range line {
-		switch {
-		case escaped:
-			escaped = false
-		case r == '\\' && inString:
-			escaped = true
-		case r == '"':
-			inString = !inString
-		case r == '#' && !inString:
-			return line[:i]
-		}
-	}
-	return line
-}
-
-func parseStringArray(value string) ([]string, bool) {
-	trimmed := strings.TrimSpace(value)
-	if !strings.HasPrefix(trimmed, "[") || !strings.HasSuffix(trimmed, "]") {
-		return nil, false
-	}
-
-	inner := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
-	if inner == "" {
-		return []string{}, true
-	}
-
-	var values []string
-	for i := 0; i < len(inner); {
-		for i < len(inner) && (inner[i] == ' ' || inner[i] == '\t' || inner[i] == '\n' || inner[i] == ',') {
-			i++
-		}
-		if i >= len(inner) {
-			break
-		}
-		if inner[i] != '"' {
-			return nil, false
-		}
-
-		j := i + 1
-		escaped := false
-		for j < len(inner) {
-			switch {
-			case escaped:
-				escaped = false
-			case inner[j] == '\\':
-				escaped = true
-			case inner[j] == '"':
-				token, err := strconv.Unquote(inner[i : j+1])
-				if err != nil {
-					return nil, false
-				}
-				values = append(values, token)
-				i = j + 1
-				goto nextValue
+func stringSlice(value any) ([]string, bool) {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...), true
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
 			}
-			j++
+			out = append(out, s)
 		}
+		return out, true
+	default:
 		return nil, false
-
-	nextValue:
-		for i < len(inner) && (inner[i] == ' ' || inner[i] == '\t' || inner[i] == '\n') {
-			i++
-		}
-		if i < len(inner) && inner[i] == ',' {
-			i++
-		}
 	}
-
-	return values, true
 }
 
 func equalStringSlices(a, b []string) bool {
