@@ -10,6 +10,45 @@ import (
 	"github.com/michaellee8/notifytun/internal/socket"
 )
 
+type delayedDeadlineContext struct {
+	deadline time.Time
+	done     chan struct{}
+}
+
+func newDelayedDeadlineContext(deadline time.Time, doneDelay time.Duration) *delayedDeadlineContext {
+	ctx := &delayedDeadlineContext{
+		deadline: deadline,
+		done:     make(chan struct{}),
+	}
+
+	time.AfterFunc(time.Until(deadline)+doneDelay, func() {
+		close(ctx.done)
+	})
+
+	return ctx
+}
+
+func (c *delayedDeadlineContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func (c *delayedDeadlineContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *delayedDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (c *delayedDeadlineContext) Value(any) any {
+	return nil
+}
+
 func TestListenAndWakeup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.sock")
 
@@ -48,6 +87,23 @@ func TestWaitTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
+
+	err = listener.Wait(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got %v", err)
+	}
+}
+
+func TestWaitDeadlineExceededBeforeContextErrorVisible(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.sock")
+
+	listener, err := socket.Listen(path)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer listener.Close()
+
+	ctx := newDelayedDeadlineContext(time.Now().Add(20*time.Millisecond), 200*time.Millisecond)
 
 	err = listener.Wait(ctx)
 	if !errors.Is(err, context.DeadlineExceeded) {

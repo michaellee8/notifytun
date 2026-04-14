@@ -58,8 +58,13 @@ func (l *Listener) Wait(ctx context.Context) error {
 	buf := make([]byte, 1)
 	if _, _, err := l.conn.ReadFromUnix(buf); err != nil {
 		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() && ctx.Err() != nil {
-			return ctx.Err()
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+				return context.DeadlineExceeded
+			}
 		}
 		return err
 	}
