@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -178,7 +179,7 @@ func runLocal(ctx context.Context, target, remoteBin, backend, notifyCmd, sshKey
 	}()
 
 	backoff := tunnelssh.NewBackoff()
-	remoteCommand := "sh -lc " + strconv.Quote(remoteBin+" attach")
+	remoteCommand := buildRemoteAttachCommand(remoteBin)
 
 	for {
 		if ctx.Err() != nil {
@@ -242,6 +243,14 @@ func waitForReconnect(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func buildRemoteAttachCommand(remoteBin string) string {
+	return "sh -lc " + strconv.Quote(shellQuote(remoteBin)+" attach")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func logRemoteStderr(stderr io.Reader) {

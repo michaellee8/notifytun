@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -273,6 +274,27 @@ backend = "generic"
 	}
 	if opts.backend != "auto" {
 		t.Fatalf("expected explicit default backend to win, got %q", opts.backend)
+	}
+}
+
+func TestBuildRemoteAttachCommandSupportsSpacesInRemoteBin(t *testing.T) {
+	remoteDir := filepath.Join(t.TempDir(), "bin dir")
+	if err := os.MkdirAll(remoteDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	remoteBin := filepath.Join(remoteDir, "notify tun")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$1\"\n"
+	if err := os.WriteFile(remoteBin, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile(remoteBin): %v", err)
+	}
+
+	out, err := exec.Command("sh", "-lc", buildRemoteAttachCommand(remoteBin)).CombinedOutput()
+	if err != nil {
+		t.Fatalf("CombinedOutput: %v (output: %s)", err, string(out))
+	}
+	if got := string(out); got != "attach\n" {
+		t.Fatalf("expected attach arg, got %q", got)
 	}
 }
 

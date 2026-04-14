@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -89,6 +90,45 @@ func TestReplayBacklogSummary(t *testing.T) {
 	summary := messages[5].(*proto.NotifMessage)
 	if !summary.Summary || summary.Body != "5 notifications delivered while disconnected" {
 		t.Fatalf("unexpected summary: %+v", summary)
+	}
+}
+
+func TestReplayBacklogKeepsRowsUndeliveredWhenSummaryWriteFails(t *testing.T) {
+	d := tempAttachDB(t)
+	for i := 0; i < 5; i++ {
+		if _, err := d.Insert("Title", "Body", "tool"); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+
+	summaryErr := errors.New("broken stdout")
+	var writes int
+	write := func(msg any) error {
+		writes++
+		notif := msg.(*proto.NotifMessage)
+		if writes == 6 {
+			if !notif.Summary {
+				t.Fatalf("expected summary message on final write, got %+v", notif)
+			}
+			return summaryErr
+		}
+		if notif.Summary {
+			t.Fatalf("expected summary only on final write, got %+v", notif)
+		}
+		return nil
+	}
+
+	err := replayBacklog(d, write, func() time.Time { return time.Unix(0, 0).UTC() })
+	if !errors.Is(err, summaryErr) {
+		t.Fatalf("expected summary error, got %v", err)
+	}
+
+	rows, err := d.QueryUndelivered()
+	if err != nil {
+		t.Fatalf("QueryUndelivered: %v", err)
+	}
+	if len(rows) != 5 {
+		t.Fatalf("expected backlog rows to remain undelivered, got %d", len(rows))
 	}
 }
 

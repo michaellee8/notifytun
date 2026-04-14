@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os/exec"
 	"runtime"
 )
 
@@ -49,7 +50,13 @@ func newAuto(notifyCmd string) (Notifier, error) {
 	case "darwin":
 		return NewMacOS(), nil
 	case "linux":
-		return NewLinux(), nil
+		if _, err := exec.LookPath("notify-send"); err == nil {
+			return NewLinux(), nil
+		}
+		if notifyCmd == "" {
+			return nil, fmt.Errorf("--notify-cmd is required when notify-send is unavailable")
+		}
+		return NewGeneric(notifyCmd)
 	default:
 		if notifyCmd == "" {
 			return nil, fmt.Errorf("auto backend is unsupported on %s without --notify-cmd", runtime.GOOS)

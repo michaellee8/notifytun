@@ -92,19 +92,29 @@ func replayBacklog(d *db.DB, write messageWriter, now func() time.Time) error {
 		if err := write(msg); err != nil {
 			return err
 		}
-		if err := d.MarkDelivered(row.ID); err != nil {
-			return err
+		if !isBacklog {
+			if err := d.MarkDelivered(row.ID); err != nil {
+				return err
+			}
 		}
 	}
 
 	if isBacklog {
-		return write(&proto.NotifMessage{
+		if err := write(&proto.NotifMessage{
 			ID:        0,
 			Title:     "notifytun",
 			Body:      fmt.Sprintf("%d notifications delivered while disconnected", len(rows)),
 			CreatedAt: now().UTC().Format(time.RFC3339Nano),
 			Summary:   true,
-		})
+		}); err != nil {
+			return err
+		}
+
+		for _, row := range rows {
+			if err := d.MarkDelivered(row.ID); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
