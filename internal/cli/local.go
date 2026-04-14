@@ -33,6 +33,12 @@ type localOptions struct {
 	notifyCmd  string
 	sshKey     string
 	configFile string
+
+	targetSet    bool
+	remoteBinSet bool
+	backendSet   bool
+	notifyCmdSet bool
+	sshKeySet    bool
 }
 
 type streamEvent struct {
@@ -55,6 +61,12 @@ func NewLocalCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.targetSet = cmd.Flags().Changed("target")
+			opts.remoteBinSet = cmd.Flags().Changed("remote-bin")
+			opts.backendSet = cmd.Flags().Changed("backend")
+			opts.notifyCmdSet = cmd.Flags().Changed("notify-cmd")
+			opts.sshKeySet = cmd.Flags().Changed("ssh-key")
+
 			if err := opts.loadAndApplyConfig(); err != nil {
 				return err
 			}
@@ -97,23 +109,23 @@ func (o *localOptions) loadAndApplyConfig() error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	if o.target == "" {
+	if !o.targetSet {
 		o.target = cfg.GetString("local.target")
 	}
-	if o.remoteBin == "notifytun" {
+	if !o.remoteBinSet {
 		if value := cfg.GetString("local.remote-bin"); value != "" {
 			o.remoteBin = value
 		}
 	}
-	if o.backend == "auto" {
+	if !o.backendSet {
 		if value := cfg.GetString("local.backend"); value != "" {
 			o.backend = value
 		}
 	}
-	if o.sshKey == "" {
+	if !o.sshKeySet {
 		o.sshKey = cfg.GetString("local.ssh-key")
 	}
-	if o.notifyCmd == "" {
+	if !o.notifyCmdSet {
 		o.notifyCmd = cfg.GetString("local.notify-cmd")
 	}
 

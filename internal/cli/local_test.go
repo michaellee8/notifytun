@@ -80,12 +80,17 @@ ssh-key = "/tmp/test-key"
 	}
 
 	opts := localOptions{
-		target:     "flag@example.com",
-		remoteBin:  "notifytun-custom",
-		backend:    "linux",
-		notifyCmd:  "printf hi",
-		sshKey:     "/tmp/flag-key",
-		configFile: configPath,
+		target:       "flag@example.com",
+		remoteBin:    "notifytun-custom",
+		backend:      "linux",
+		notifyCmd:    "printf hi",
+		sshKey:       "/tmp/flag-key",
+		configFile:   configPath,
+		targetSet:    true,
+		remoteBinSet: true,
+		backendSet:   true,
+		notifyCmdSet: true,
+		sshKeySet:    true,
 	}
 
 	if err := opts.loadAndApplyConfig(); err != nil {
@@ -106,6 +111,63 @@ ssh-key = "/tmp/test-key"
 	}
 	if opts.sshKey != "/tmp/flag-key" {
 		t.Fatalf("expected explicit ssh key to win, got %q", opts.sshKey)
+	}
+}
+
+func TestLocalCmdExplicitDefaultBackendFlagBeatsConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	content := `
+[local]
+target = "127.0.0.1:1"
+backend = "bogus"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	cmd := NewLocalCmd()
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"--backend", "auto",
+	})
+
+	err := cmd.ExecuteContext(ctx)
+	if err != nil && strings.Contains(err.Error(), "unknown backend: bogus") {
+		t.Fatalf("expected explicit --backend auto to win over config, got %v", err)
+	}
+}
+
+func TestLocalOptionsPreserveExplicitDefaultValuedFlags(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	content := `
+[local]
+remote-bin = "/opt/bin/notifytun"
+backend = "generic"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	opts := localOptions{
+		remoteBin:    "notifytun",
+		backend:      "auto",
+		configFile:   configPath,
+		remoteBinSet: true,
+		backendSet:   true,
+	}
+
+	if err := opts.loadAndApplyConfig(); err != nil {
+		t.Fatalf("loadAndApplyConfig: %v", err)
+	}
+
+	if opts.remoteBin != "notifytun" {
+		t.Fatalf("expected explicit default remote bin to win, got %q", opts.remoteBin)
+	}
+	if opts.backend != "auto" {
+		t.Fatalf("expected explicit default backend to win, got %q", opts.backend)
 	}
 }
 
