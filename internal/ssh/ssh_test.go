@@ -237,6 +237,39 @@ func TestConnectFallsBackToDefaultKeyWhenConfiguredIdentityFileIsMissing(t *test
 	}
 }
 
+func TestConnectFailsWhenExplicitOverrideKeyIsMissing(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	defaultKeyPath := filepath.Join(sshDir, "id_ed25519")
+	if err := writePrivateKey(defaultKeyPath, newTestPrivateKey(t)); err != nil {
+		t.Fatalf("writePrivateKey(default): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "known_hosts"), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile(known_hosts): %v", err)
+	}
+
+	missingOverride := filepath.Join(t.TempDir(), "missing_override")
+	cfg := tunnelssh.ResolveTarget("agentuser@127.0.0.1:65534", missingOverride, "")
+
+	_, err := tunnelssh.Connect(context.Background(), cfg, "echo ok")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "build auth methods") {
+		t.Fatalf("expected build auth methods error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), missingOverride) {
+		t.Fatalf("expected explicit override path in error, got %v", err)
+	}
+}
+
 func TestConnectCancelsDuringHandshake(t *testing.T) {
 	home := t.TempDir()
 	sshDir := filepath.Join(home, ".ssh")

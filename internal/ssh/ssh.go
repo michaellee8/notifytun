@@ -31,6 +31,8 @@ type ConnConfig struct {
 	Port    string
 	User    string
 	KeyPath string
+
+	keyPathOptional bool
 }
 
 // ResolveTarget resolves a target string (user@host[:port], host alias) into connection config.
@@ -62,11 +64,13 @@ func ResolveTarget(target, sshKeyOverride, sshConfigPath string) ConnConfig {
 		}
 		if keyPath, err := parsed.Get(alias, "IdentityFile"); err == nil && keyPath != "" && sshKeyOverride == "" {
 			cfg.KeyPath = expandHomePath(keyPath)
+			cfg.keyPathOptional = true
 		}
 	}
 
 	if sshKeyOverride != "" {
 		cfg.KeyPath = expandHomePath(sshKeyOverride)
+		cfg.keyPathOptional = false
 	}
 
 	return cfg
@@ -82,7 +86,7 @@ type Session struct {
 
 // Connect establishes an SSH connection and starts a remote command.
 func Connect(ctx context.Context, cfg ConnConfig, remoteCmd string) (*Session, error) {
-	authMethods, authCleanup, err := buildAuthMethods(cfg.KeyPath)
+	authMethods, authCleanup, err := buildAuthMethods(cfg.KeyPath, cfg.keyPathOptional)
 	if err != nil {
 		return nil, fmt.Errorf("build auth methods: %w", err)
 	}
@@ -232,7 +236,7 @@ func (b *Backoff) Reset() {
 	b.current = initialBackoff
 }
 
-func buildAuthMethods(keyPath string) ([]gossh.AuthMethod, func(), error) {
+func buildAuthMethods(keyPath string, keyPathOptional bool) ([]gossh.AuthMethod, func(), error) {
 	var methods []gossh.AuthMethod
 	var cleanupFns []func()
 	seenKeyPaths := make(map[string]struct{})
@@ -240,8 +244,15 @@ func buildAuthMethods(keyPath string) ([]gossh.AuthMethod, func(), error) {
 	if keyPath != "" {
 		seenKeyPaths[keyPath] = struct{}{}
 		signer, err := loadSignerFromFile(keyPath)
-		if err == nil {
+		if err != nil {
+			if !keyPathOptional {
+				return nil, func() {}, err
+			}
+		} else {
 			methods = append(methods, gossh.PublicKeys(signer))
+			if !keyPathOptional {
+				return methods, func() {}, nil
+			}
 		}
 	}
 
