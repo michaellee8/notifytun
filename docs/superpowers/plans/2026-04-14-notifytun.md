@@ -1287,12 +1287,20 @@ Create `internal/cli/emit.go`:
 package cli
 
 import (
+	"encoding/json"
 	"os"
+	"strings"
 
 	"github.com/michaellee8/notifytun/internal/db"
 	"github.com/michaellee8/notifytun/internal/socket"
 	"github.com/spf13/cobra"
 )
+
+type codexNotifyPayload struct {
+	Type                 string   `json:"type"`
+	InputMessages        []string `json:"input-messages"`
+	LastAssistantMessage string   `json:"last-assistant-message"`
+}
 
 func NewEmitCmd() *cobra.Command {
 	var (
@@ -1304,12 +1312,25 @@ func NewEmitCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "emit",
+		Use:   "emit [codex-notify-json]",
 		Short: "Record a notification (called by tool hooks)",
+		Args:  cobra.MaximumNArgs(1),
 		// emit must never fail loudly — no stderr output on error
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && title == "" {
+				var payload codexNotifyPayload
+				if err := json.Unmarshal([]byte(args[0]), &payload); err == nil &&
+					payload.Type == "agent-turn-complete" {
+					title = "Task complete"
+					body = strings.TrimSpace(payload.LastAssistantMessage)
+					if body == "" {
+						body = strings.Join(payload.InputMessages, " ")
+					}
+				}
+			}
+
 			if title == "" {
 				os.Exit(1)
 				return nil
@@ -1338,7 +1359,7 @@ func NewEmitCmd() *cobra.Command {
 	defaultDB := home + "/.notifytun/notifytun.db"
 	defaultSock := home + "/.notifytun/notifytun.sock"
 
-	cmd.Flags().StringVar(&title, "title", "", "Notification title (required)")
+	cmd.Flags().StringVar(&title, "title", "", "Notification title (required unless derived from Codex payload)")
 	cmd.Flags().StringVar(&body, "body", "", "Notification body")
 	cmd.Flags().StringVar(&tool, "tool", "", "Source tool name")
 	cmd.Flags().StringVar(&dbPath, "db", defaultDB, "SQLite database path")
@@ -1385,8 +1406,8 @@ func main() {
 Run: `go build -o notifytun ./cmd/notifytun && ./notifytun emit --title "Test" --body "Hello" --tool "test" --db /tmp/notifytun-test.db && echo "exit code: $?"`
 Expected: `exit code: 0`
 
-Verify the row was written:
-Run: `go build -o notifytun ./cmd/notifytun && ./notifytun emit --title "Second" --body "" --tool "claude-code" --db /tmp/notifytun-test.db && echo "exit code: $?"`
+Verify Codex notify compatibility:
+Run: `go build -o notifytun ./cmd/notifytun && ./notifytun emit --tool "codex" --db /tmp/notifytun-test.db '{"type":"agent-turn-complete","input-messages":["rename foo to bar"],"last-assistant-message":"Rename complete"}' && echo "exit code: $?"`
 Expected: `exit code: 0`
 
 - [ ] **Step 4: Commit**
@@ -2447,11 +2468,21 @@ func TestClaudeHookGeneration(t *testing.T) {
 	if !strings.Contains(hook, `"Stop"`) {
 		t.Fatal("expected Stop hook in generated config")
 	}
-	if strings.Contains(hook, `"Notification"`) {
-		t.Fatal("generated config should not add Claude Notification hooks")
+	if !strings.Contains(hook, `"Notification"`) {
+		t.Fatal("expected Notification hook in generated config")
 	}
 	if !strings.Contains(hook, "Task complete") {
 		t.Fatal("expected generated hook to emit Task complete notifications")
+	}
+	if !strings.Contains(hook, "Needs attention") {
+		t.Fatal("expected generated hook to emit Claude attention notifications")
+	}
+}
+
+func TestCodexNotifyGeneration(t *testing.T) {
+	cfg := setup.GenerateCodexNotifyConfig()
+	if !strings.Contains(cfg, `notify = ["notifytun", "emit", "--tool", "codex"]`) {
+		t.Fatal("expected codex notify config to call notifytun emit")
 	}
 }
 
@@ -2492,6 +2523,17 @@ func TestDetectAlreadyConfigured(t *testing.T) {
           {
             "type": "command",
             "command": "notifytun emit --tool claude-code --title 'Task complete'"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit --tool claude-code --title 'Needs attention'"
           }
         ]
       }
@@ -2540,6 +2582,25 @@ func TestApplyClaudeHookPreservesExistingStopHooks(t *testing.T) {
 		t.Fatal("expected exactly one notifytun Stop hook after apply")
 	}
 }
+
+func TestCodexNotifyIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	first, _ := os.ReadFile(configPath)
+
+	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	second, _ := os.ReadFile(configPath)
+
+	if string(first) != string(second) {
+		t.Fatal("second codex apply changed the file")
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2563,7 +2624,11 @@ import (
 	"strings"
 )
 
-const claudeHookCommand = "notifytun emit --tool claude-code --title 'Task complete'"
+const (
+	claudeStopCommand         = "notifytun emit --tool claude-code --title 'Task complete'"
+	claudeNotificationCommand = "notifytun emit --tool claude-code --title 'Needs attention'"
+	codexNotifyConfigLine     = `notify = ["notifytun", "emit", "--tool", "codex"]`
+)
 
 // Tool represents a detected AI coding tool.
 type Tool struct {
@@ -2590,7 +2655,10 @@ func DetectTools(extraPath string) []Tool {
 	var tools []Tool
 
 	for _, known := range KnownTools {
-		tool := Tool{Name: known.Name, Supported: known.Name == "Claude Code"}
+		tool := Tool{
+			Name: known.Name,
+			Supported: known.Name == "Claude Code" || known.Name == "Codex CLI",
+		}
 		for _, bin := range known.Binaries {
 			var path string
 			if extraPath != "" {
@@ -2631,6 +2699,17 @@ func GenerateClaudeHook() string {
           }
         ]
       }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit --tool claude-code --title 'Needs attention'"
+          }
+        ]
+      }
     ]
   }
 }`
@@ -2665,7 +2744,54 @@ func IsClaudeConfigured(settingsPath string) bool {
 		return false
 	}
 
-	return hasClaudeStopHook(stopEntries)
+	notificationValue, ok := hooks["Notification"]
+	if !ok {
+		return false
+	}
+	notificationEntries, ok := notificationValue.([]interface{})
+	if !ok {
+		return false
+	}
+
+	return hasHookCommand(stopEntries, claudeStopCommand) &&
+		hasHookCommand(notificationEntries, claudeNotificationCommand)
+}
+
+func GenerateCodexNotifyConfig() string {
+	return codexNotifyConfigLine + "\n"
+}
+
+func IsCodexConfigured(configPath string) bool {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), codexNotifyConfigLine)
+}
+
+func ApplyCodexNotifyConfig(configPath string) error {
+	if IsCodexConfigured(configPath) {
+		return nil
+	}
+
+	var existing string
+	data, err := os.ReadFile(configPath)
+	if err == nil {
+		existing = string(data)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read codex config: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return fmt.Errorf("create codex config dir: %w", err)
+	}
+
+	if existing != "" && !strings.HasSuffix(existing, "\n") {
+		existing += "\n"
+	}
+	existing += GenerateCodexNotifyConfig()
+
+	return os.WriteFile(configPath, []byte(existing), 0o644)
 }
 
 // ApplyClaudeHook writes or merges notifytun hooks into Claude Code settings.
@@ -2704,22 +2830,47 @@ func ApplyClaudeHook(settingsPath string) error {
 			return fmt.Errorf("unexpected hooks.Stop format: want array")
 		}
 		stopEntries = typed
-		if hasClaudeStopHook(stopEntries) {
-			return nil
-		}
 	}
 
-	stopEntries = append(stopEntries, map[string]interface{}{
-		"matcher": "",
-		"hooks": []interface{}{
-			map[string]interface{}{
-				"type":    "command",
-				"command": claudeHookCommand,
+	var notificationEntries []interface{}
+	if existing, ok := hooks["Notification"]; ok {
+		typed, ok := existing.([]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected hooks.Notification format: want array")
+		}
+		notificationEntries = typed
+	}
+
+	if hasHookCommand(stopEntries, claudeStopCommand) &&
+		hasHookCommand(notificationEntries, claudeNotificationCommand) {
+		return nil
+	}
+
+	if !hasHookCommand(stopEntries, claudeStopCommand) {
+		stopEntries = append(stopEntries, map[string]interface{}{
+			"matcher": "",
+			"hooks": []interface{}{
+				map[string]interface{}{
+					"type":    "command",
+					"command": claudeStopCommand,
+				},
 			},
-		},
-	})
+		})
+	}
 
 	hooks["Stop"] = stopEntries
+	if !hasHookCommand(notificationEntries, claudeNotificationCommand) {
+		notificationEntries = append(notificationEntries, map[string]interface{}{
+			"matcher": "",
+			"hooks": []interface{}{
+				map[string]interface{}{
+					"type":    "command",
+					"command": claudeNotificationCommand,
+				},
+			},
+		})
+	}
+	hooks["Notification"] = notificationEntries
 	settings["hooks"] = hooks
 
 	// Write back
@@ -2733,7 +2884,7 @@ func ApplyClaudeHook(settingsPath string) error {
 	return os.WriteFile(settingsPath, output, 0o644)
 }
 
-func hasClaudeStopHook(entries []interface{}) bool {
+func hasHookCommand(entries []interface{}, want string) bool {
 	for _, entry := range entries {
 		entryMap, ok := entry.(map[string]interface{})
 		if !ok {
@@ -2749,7 +2900,7 @@ func hasClaudeStopHook(entries []interface{}) bool {
 				continue
 			}
 			command, _ := hookMap["command"].(string)
-			if command == claudeHookCommand {
+			if command == want {
 				return true
 			}
 		}
@@ -2766,7 +2917,12 @@ func Preview(tools []Tool) string {
 			if tool.Configured {
 				sb.WriteString(fmt.Sprintf("  * %s -- already configured\n", tool.Name))
 			} else if tool.Supported {
-				sb.WriteString(fmt.Sprintf("  * %s -- will add Stop hook\n", tool.Name))
+				switch tool.Name {
+				case "Claude Code":
+					sb.WriteString("  * Claude Code -- will add Stop + Notification hooks\n")
+				case "Codex CLI":
+					sb.WriteString("  * Codex CLI -- will set notify in ~/.codex/config.toml\n")
+				}
 			} else {
 				sb.WriteString(fmt.Sprintf("  * %s -- detected but hook setup not supported in v1\n", tool.Name))
 			}
@@ -2779,7 +2935,7 @@ func Preview(tools []Tool) string {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/setup/ -v -count=1`
-Expected: All 5 tests PASS
+Expected: All 7 tests PASS
 
 - [ ] **Step 5: Implement the remote-setup CLI command**
 
@@ -2819,6 +2975,10 @@ func NewRemoteSetupCmd() *cobra.Command {
 				if tools[i].Name == "Claude Code" {
 					settingsPath := filepath.Join(home, ".claude", "settings.json")
 					tools[i].Configured = setup.IsClaudeConfigured(settingsPath)
+				}
+				if tools[i].Name == "Codex CLI" {
+					configPath := filepath.Join(home, ".codex", "config.toml")
+					tools[i].Configured = setup.IsCodexConfigured(configPath)
 				}
 			}
 
@@ -2866,6 +3026,13 @@ func NewRemoteSetupCmd() *cobra.Command {
 					} else {
 						fmt.Printf("Configured %s hooks in %s\n", tool.Name, settingsPath)
 					}
+				case "Codex CLI":
+					configPath := filepath.Join(home, ".codex", "config.toml")
+					if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
+						fmt.Fprintf(os.Stderr, "warning: failed to configure %s: %v\n", tool.Name, err)
+					} else {
+						fmt.Printf("Configured %s notify in %s\n", tool.Name, configPath)
+					}
 				}
 			}
 
@@ -2896,7 +3063,7 @@ func init() {
 - [ ] **Step 7: Build and verify**
 
 Run: `go build -o notifytun ./cmd/notifytun && ./notifytun remote-setup --dry-run`
-Expected: Output showing detected tools, unsupported-tool notices when applicable, and "(dry run — no changes applied)"
+Expected: Output showing Claude Code Stop + Notification hook setup, Codex `notify` config setup when detected, unsupported-tool notices when applicable, and "(dry run — no changes applied)"
 
 - [ ] **Step 8: Commit**
 

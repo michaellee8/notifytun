@@ -83,16 +83,18 @@ On startup: query SQLite for undelivered rows, stream as JSONL, then listen on s
 Called by tool hooks.
 
 ```
-notifytun emit [flags]
+notifytun emit [flags] [codex-notify-json]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
-| `--title` | (required) | Notification title |
+| `--title` | derived from Codex payload when present, otherwise required | Notification title |
 | `--body` | `""` | Notification body |
 | `--tool` | `""` | Source tool name (`claude-code`, `codex`, `gemini`, `opencode`) |
 | `--db` | `~/.notifytun/notifytun.db` | SQLite path |
 | `--socket` | `~/.notifytun/notifytun.sock` | Socket path |
+
+Normal hooks pass `--title`/`--body` explicitly. For Codex CLI integration, `notifytun emit` also accepts one trailing JSON argument in Codex `notify` format. When that payload is present and `--title` is unset, `emit` derives `title = "Task complete"` and uses `last-assistant-message` as the body, falling back to joined `input-messages` if needed.
 
 Writes row to SQLite (always), then tries to send a wakeup byte to the socket (best-effort).
 
@@ -334,22 +336,25 @@ Auto-configures AI tool hooks on the remote VM.
 
 | Tool | Detection | Hook Mechanism |
 |---|---|---|
-| Claude Code | `claude` or `claude-code` in PATH | `~/.claude/settings.json` hooks array |
-| Codex CLI | `codex` in PATH | Detection only in v1; preview as detected-but-unsupported, no file changes |
+| Claude Code | `claude` or `claude-code` in PATH | `~/.claude/settings.json` `Stop` and `Notification` hooks arrays |
+| Codex CLI | `codex` in PATH | `~/.codex/config.toml` `notify` argv array |
 | Gemini CLI | `gemini` in PATH | Detection only in v1; preview as detected-but-unsupported, no file changes |
 | OpenCode | `opencode` in PATH | Detection only in v1; preview as detected-but-unsupported, no file changes |
 
-Any hook entries written by v1 call `notifytun emit --tool <name> --title "Task complete"`.
+Hook entries written by v1:
+- Claude Code `Stop` hook -> `notifytun emit --tool claude-code --title "Task complete"`
+- Claude Code `Notification` hook -> `notifytun emit --tool claude-code --title "Needs attention"`
+- Codex CLI `notify` config -> `notify = ["notifytun", "emit", "--tool", "codex"]` (Codex appends one JSON argument at runtime)
 
 ### Behavior
 
 1. Scan PATH for known tool binaries
-2. For each detected tool with supported hook setup, check if hooks are already configured
+2. For each detected tool with supported hook setup, check if config is already present
 3. Show preview:
    ```
    Detected tools:
-     * Claude Code -- will add Stop hook to ~/.claude/settings.json
-     * Codex CLI -- detected but hook setup not supported in v1
+     * Claude Code -- will add Stop + Notification hooks to ~/.claude/settings.json
+     * Codex CLI -- will set notify in ~/.codex/config.toml
 
    Apply? [Y/n]
    ```
