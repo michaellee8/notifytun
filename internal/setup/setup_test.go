@@ -1,0 +1,184 @@
+package setup_test
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/michaellee8/notifytun/internal/setup"
+)
+
+func TestDetectTools(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"claude", "codex"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("WriteFile(%q): %v", name, err)
+		}
+	}
+
+	tools := setup.DetectTools(dir)
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d: %+v", len(tools), tools)
+	}
+
+	found := map[string]bool{}
+	for _, tool := range tools {
+		found[tool.Name] = true
+	}
+	if !found["Claude Code"] {
+		t.Fatal("expected Claude Code to be detected")
+	}
+	if !found["Codex CLI"] {
+		t.Fatal("expected Codex CLI to be detected")
+	}
+}
+
+func TestClaudeHookGeneration(t *testing.T) {
+	hook := setup.GenerateClaudeHook()
+	if !strings.Contains(hook, `"Stop"`) {
+		t.Fatal("expected Stop hook in generated config")
+	}
+	if !strings.Contains(hook, `"Notification"`) {
+		t.Fatal("expected Notification hook in generated config")
+	}
+	if !strings.Contains(hook, "Task complete") {
+		t.Fatal("expected generated hook to emit Task complete notifications")
+	}
+	if !strings.Contains(hook, "Needs attention") {
+		t.Fatal("expected generated hook to emit Claude attention notifications")
+	}
+}
+
+func TestCodexNotifyGeneration(t *testing.T) {
+	cfg := setup.GenerateCodexNotifyConfig()
+	if !strings.Contains(cfg, `notify = ["notifytun", "emit", "--tool", "codex"]`) {
+		t.Fatal("expected codex notify config to call notifytun emit")
+	}
+}
+
+func TestClaudeHookIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+
+	if err := setup.ApplyClaudeHook(settingsPath); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+
+	first, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(first): %v", err)
+	}
+
+	if err := setup.ApplyClaudeHook(settingsPath); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+
+	second, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile(second): %v", err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("second apply changed the file - not idempotent")
+	}
+}
+
+func TestDetectAlreadyConfigured(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit --tool claude-code --title 'Task complete'"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit --tool claude-code --title 'Needs attention'"
+          }
+        ]
+      }
+    ]
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if !setup.IsClaudeConfigured(settingsPath) {
+		t.Fatal("expected Claude to be detected as already configured")
+	}
+}
+
+func TestApplyClaudeHookPreservesExistingStopHooks(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "existing",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo existing"
+          }
+        ]
+      }
+    ]
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := setup.ApplyClaudeHook(settingsPath); err != nil {
+		t.Fatalf("ApplyClaudeHook: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "echo existing") {
+		t.Fatal("expected existing Stop hook to be preserved")
+	}
+	if strings.Count(content, "notifytun emit --tool claude-code --title 'Task complete'") != 1 {
+		t.Fatal("expected exactly one notifytun Stop hook after apply")
+	}
+}
+
+func TestCodexNotifyIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	first, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(first): %v", err)
+	}
+
+	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	second, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(second): %v", err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("second codex apply changed the file")
+	}
+}

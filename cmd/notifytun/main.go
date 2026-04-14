@@ -18,6 +18,7 @@ func init() {
 	rootCmd.AddCommand(cli.NewEmitCmd())
 	rootCmd.AddCommand(cli.NewAttachCmd())
 	rootCmd.AddCommand(cli.NewLocalCmd())
+	rootCmd.AddCommand(cli.NewRemoteSetupCmd())
 	rootCmd.AddCommand(cli.NewTestNotifyCmd())
 }
 
