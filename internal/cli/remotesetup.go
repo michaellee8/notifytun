@@ -93,10 +93,13 @@ func hasConfigWork(tools []setup.Tool) bool {
 func confirmApply(in io.Reader, out io.Writer) bool {
 	fmt.Fprint(out, "Apply? [Y/n] ")
 	answer, err := bufio.NewReader(in).ReadString('\n')
-	if err != nil && err != io.EOF {
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	if err != nil {
+		if err == io.EOF {
+			return answer == "y" || answer == "yes"
+		}
 		return false
 	}
-	answer = strings.TrimSpace(strings.ToLower(answer))
 	return answer == "" || answer == "y" || answer == "yes"
 }
 

@@ -209,6 +209,68 @@ func TestRemoteSetupContinuesAfterPerToolFailure(t *testing.T) {
 	}
 }
 
+func TestRemoteSetupAbortsOnNo(t *testing.T) {
+	t.Setenv("PATH", makeFakePath(t, "claude", "codex"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cmd := NewRemoteSetupCmd()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetIn(strings.NewReader("n\n"))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "Aborted.") {
+		t.Fatalf("expected abort message, got %q", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected Claude settings to remain absent, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected Codex config to remain absent, stat err=%v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestRemoteSetupAbortsOnEOF(t *testing.T) {
+	t.Setenv("PATH", makeFakePath(t, "claude", "codex"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cmd := NewRemoteSetupCmd()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetIn(strings.NewReader(""))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "Aborted.") {
+		t.Fatalf("expected abort message on EOF, got %q", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected Claude settings to remain absent, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected Codex config to remain absent, stat err=%v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
 func makeFakePath(t *testing.T, names ...string) string {
 	t.Helper()
 

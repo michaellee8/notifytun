@@ -68,6 +68,28 @@ func TestDetectToolsClaudeCodeAlias(t *testing.T) {
 	}
 }
 
+func TestDetectToolsInjectedPathRequiresExecutable(t *testing.T) {
+	dir := t.TempDir()
+
+	claudePath := filepath.Join(dir, "claude")
+	if err := os.WriteFile(claudePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(claude): %v", err)
+	}
+
+	codexPath := filepath.Join(dir, "codex")
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(codex): %v", err)
+	}
+
+	tools := setup.DetectTools(dir)
+	if len(tools) != 1 {
+		t.Fatalf("expected only executable tools to be detected, got %d: %+v", len(tools), tools)
+	}
+	if tools[0].Name != "Claude Code" {
+		t.Fatalf("expected Claude Code only, got %+v", tools)
+	}
+}
+
 func TestClaudeHookGeneration(t *testing.T) {
 	hook := setup.GenerateClaudeHook()
 	if !strings.Contains(hook, `"Stop"`) {
@@ -213,5 +235,77 @@ func TestCodexNotifyIdempotent(t *testing.T) {
 	}
 	if string(first) != string(second) {
 		t.Fatal("second codex apply changed the file")
+	}
+}
+
+func TestIsCodexConfiguredIgnoresTableScopedNotify(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(`[profiles.default]
+notify = ["notifytun", "emit", "--tool", "codex"]
+model = "gpt-5"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if setup.IsCodexConfigured(configPath) {
+		t.Fatal("expected table-scoped notify to not count as configured")
+	}
+}
+
+func TestApplyCodexNotifyConfigInsertsRootNotifyBeforeFirstTable(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(`[profiles.default]
+model = "gpt-5"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
+		t.Fatalf("ApplyCodexNotifyConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `notify = ["notifytun", "emit", "--tool", "codex"]`) {
+		t.Fatalf("expected notify line to be present, got %q", content)
+	}
+	if strings.Index(content, `notify = ["notifytun", "emit", "--tool", "codex"]`) > strings.Index(content, "[profiles.default]") {
+		t.Fatalf("expected root notify before first table, got %q", content)
+	}
+}
+
+func TestApplyCodexNotifyConfigReplacesExistingRootNotify(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(`notify = ["other", "command"]
+
+[profiles.default]
+model = "gpt-5"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
+		t.Fatalf("ApplyCodexNotifyConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, `notify = ["other", "command"]`) {
+		t.Fatalf("expected old root notify to be replaced, got %q", content)
+	}
+	if strings.Count(content, `notify = ["notifytun", "emit", "--tool", "codex"]`) != 1 {
+		t.Fatalf("expected exactly one root notify line, got %q", content)
+	}
+	if strings.Index(content, `notify = ["notifytun", "emit", "--tool", "codex"]`) > strings.Index(content, "[profiles.default]") {
+		t.Fatalf("expected root notify before first table, got %q", content)
 	}
 }

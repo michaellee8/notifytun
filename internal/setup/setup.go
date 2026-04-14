@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +15,8 @@ const (
 	claudeNotificationCommand = "notifytun emit --tool claude-code --title 'Needs attention'"
 	codexNotifyConfigLine     = `notify = ["notifytun", "emit", "--tool", "codex"]`
 )
+
+var codexNotifyCommand = []string{"notifytun", "emit", "--tool", "codex"}
 
 // Tool represents a detected AI coding tool and whether notifytun can configure it.
 type Tool struct {
@@ -72,11 +75,9 @@ func lookPath(binary, pathEnv string) string {
 			continue
 		}
 		candidate := filepath.Join(dir, binary)
-		info, err := os.Stat(candidate)
-		if err != nil || info.IsDir() {
-			continue
+		if path, err := exec.LookPath(candidate); err == nil {
+			return path
 		}
-		return candidate
 	}
 
 	return ""
@@ -281,15 +282,13 @@ func IsCodexConfigured(configPath string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(data), codexNotifyConfigLine)
+
+	notifyArgs, count := findRootNotifyAssignments(string(data))
+	return count == 1 && equalStringSlices(notifyArgs, codexNotifyCommand)
 }
 
-// ApplyCodexNotifyConfig appends the notifytun notify line when absent.
+// ApplyCodexNotifyConfig writes the notifytun notify config at the TOML root.
 func ApplyCodexNotifyConfig(configPath string) error {
-	if IsCodexConfigured(configPath) {
-		return nil
-	}
-
 	data, err := os.ReadFile(configPath)
 	existing := ""
 	if err == nil {
@@ -298,19 +297,232 @@ func ApplyCodexNotifyConfig(configPath string) error {
 		return fmt.Errorf("read Codex config: %w", err)
 	}
 
+	updated := upsertRootNotify(existing)
+	if existing == updated {
+		return nil
+	}
+
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		return fmt.Errorf("create Codex config dir: %w", err)
 	}
 
-	if existing != "" && !strings.HasSuffix(existing, "\n") {
-		existing += "\n"
-	}
-	existing += GenerateCodexNotifyConfig()
-
-	if err := os.WriteFile(configPath, []byte(existing), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte(updated), 0o644); err != nil {
 		return fmt.Errorf("write Codex config: %w", err)
 	}
 	return nil
+}
+
+func findRootNotifyAssignments(content string) ([]string, int) {
+	rootLines, _ := splitTOMLRoot(content)
+
+	count := 0
+	var notifyArgs []string
+	for _, line := range rootLines {
+		key, value, ok := parseBareAssignment(line)
+		if !ok || key != "notify" {
+			continue
+		}
+
+		count++
+		if count != 1 {
+			continue
+		}
+
+		args, ok := parseStringArray(value)
+		if ok {
+			notifyArgs = args
+		}
+	}
+
+	return notifyArgs, count
+}
+
+func upsertRootNotify(content string) string {
+	rootLines, bodyLines := splitTOMLRoot(content)
+	rootLines = replaceRootNotify(rootLines)
+	return joinTOML(rootLines, bodyLines)
+}
+
+func replaceRootNotify(rootLines []string) []string {
+	rootLines = trimTrailingBlankLines(rootLines)
+
+	var updated []string
+	replaced := false
+	for _, line := range rootLines {
+		key, _, ok := parseBareAssignment(line)
+		if ok && key == "notify" {
+			if !replaced {
+				updated = append(updated, codexNotifyConfigLine)
+				replaced = true
+			}
+			continue
+		}
+		updated = append(updated, line)
+	}
+
+	if !replaced {
+		updated = append(updated, codexNotifyConfigLine)
+	}
+	return updated
+}
+
+func splitTOMLRoot(content string) ([]string, []string) {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	normalized = strings.TrimSuffix(normalized, "\n")
+	if normalized == "" {
+		return nil, nil
+	}
+
+	lines := strings.Split(normalized, "\n")
+	firstTable := len(lines)
+	for i, line := range lines {
+		if isTOMLTableHeader(line) {
+			firstTable = i
+			break
+		}
+	}
+
+	rootLines := append([]string(nil), lines[:firstTable]...)
+	bodyLines := append([]string(nil), lines[firstTable:]...)
+	return rootLines, bodyLines
+}
+
+func joinTOML(rootLines, bodyLines []string) string {
+	rootLines = trimTrailingBlankLines(rootLines)
+
+	var lines []string
+	lines = append(lines, rootLines...)
+	if len(rootLines) > 0 && len(bodyLines) > 0 {
+		lines = append(lines, "")
+	}
+	lines = append(lines, bodyLines...)
+
+	if len(lines) == 0 {
+		return GenerateCodexNotifyConfig()
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func trimTrailingBlankLines(lines []string) []string {
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	return append([]string(nil), lines[:end]...)
+}
+
+func isTOMLTableHeader(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "[")
+}
+
+func parseBareAssignment(line string) (string, string, bool) {
+	trimmed := strings.TrimSpace(stripTOMLComment(line))
+	if trimmed == "" {
+		return "", "", false
+	}
+
+	equals := strings.Index(trimmed, "=")
+	if equals < 0 {
+		return "", "", false
+	}
+
+	key := strings.TrimSpace(trimmed[:equals])
+	if key == "" || strings.ContainsAny(key, ".\"'[]") {
+		return "", "", false
+	}
+
+	value := strings.TrimSpace(trimmed[equals+1:])
+	return key, value, true
+}
+
+func stripTOMLComment(line string) string {
+	inString := false
+	escaped := false
+	for i, r := range line {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && inString:
+			escaped = true
+		case r == '"':
+			inString = !inString
+		case r == '#' && !inString:
+			return line[:i]
+		}
+	}
+	return line
+}
+
+func parseStringArray(value string) ([]string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, "[") || !strings.HasSuffix(trimmed, "]") {
+		return nil, false
+	}
+
+	inner := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+	if inner == "" {
+		return []string{}, true
+	}
+
+	var values []string
+	for i := 0; i < len(inner); {
+		for i < len(inner) && (inner[i] == ' ' || inner[i] == '\t' || inner[i] == '\n' || inner[i] == ',') {
+			i++
+		}
+		if i >= len(inner) {
+			break
+		}
+		if inner[i] != '"' {
+			return nil, false
+		}
+
+		j := i + 1
+		escaped := false
+		for j < len(inner) {
+			switch {
+			case escaped:
+				escaped = false
+			case inner[j] == '\\':
+				escaped = true
+			case inner[j] == '"':
+				token, err := strconv.Unquote(inner[i : j+1])
+				if err != nil {
+					return nil, false
+				}
+				values = append(values, token)
+				i = j + 1
+				goto nextValue
+			}
+			j++
+		}
+		return nil, false
+
+	nextValue:
+		for i < len(inner) && (inner[i] == ' ' || inner[i] == '\t' || inner[i] == '\n') {
+			i++
+		}
+		if i < len(inner) && inner[i] == ',' {
+			i++
+		}
+	}
+
+	return values, true
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Preview summarizes what remote-setup would do for detected tools.
