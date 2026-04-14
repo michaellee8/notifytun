@@ -1,0 +1,24 @@
+# notifytun configuration
+# Copy to ~/.notifytun/config.toml and edit as needed.
+# CLI flags override all values set here.
+
+[local]
+# SSH target — required (unless passed via --target flag)
+# Can be user@host or an SSH config Host alias
+# target = "user@myvm"
+
+# Path to notifytun binary on the remote machine
+# Wrapped in sh -lc for PATH resolution
+# remote-bin = "notifytun"
+
+# Notifier backend: auto, macos, linux, generic
+# auto detects based on OS
+# backend = "auto"
+
+# Path to SSH private key (optional)
+# If unset, uses SSH agent or keys from ~/.ssh/config
+# ssh-key = "~/.ssh/id_ed25519"
+
+# Custom notification command for generic backend
+# Receives notification JSON on stdin
+# notify-cmd = "/usr/local/bin/my-notifier"
