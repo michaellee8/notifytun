@@ -3,11 +3,9 @@ module github.com/michaellee8/notifytun
 go 1.25.5
 
 require (
-	github.com/kevinburke/ssh_config v1.6.0
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	golang.org/x/crypto v0.50.0
 	modernc.org/sqlite v1.48.2
 )
 
