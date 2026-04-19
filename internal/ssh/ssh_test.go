@@ -29,6 +29,20 @@ func installFakeSSH(t *testing.T, script string) string {
 	return dir
 }
 
+// requireBinSleep skips the test if /bin/sleep is not executable — fake-ssh
+// scripts that need a long-running child rely on its absolute path since
+// installFakeSSH replaces PATH with a dir containing only the fake ssh.
+func requireBinSleep(t *testing.T) {
+	t.Helper()
+	info, err := os.Stat("/bin/sleep")
+	if err != nil {
+		t.Skipf("/bin/sleep not available: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Skipf("/bin/sleep not executable: mode %v", info.Mode())
+	}
+}
+
 func TestConnectHappyPath(t *testing.T) {
 	dir := installFakeSSH(t, `#!/bin/sh
 for a in "$@"; do
@@ -159,8 +173,9 @@ exit 5
 }
 
 func TestConnectCtxCancelKillsProcess(t *testing.T) {
+	requireBinSleep(t)
 	installFakeSSH(t, `#!/bin/sh
-sleep 60
+exec /bin/sleep 60
 `)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -189,6 +204,9 @@ sleep 60
 	if elapsed > 1*time.Second {
 		t.Fatalf("expected Wait to return promptly after ctx cancel, took %s", elapsed)
 	}
+	if elapsed < 10*time.Millisecond {
+		t.Fatalf("Wait returned suspiciously fast (%s); fake ssh may have self-exited before ctx cancel fired", elapsed)
+	}
 }
 
 func TestConnectCtxCancelKillsProcessIgnoringSIGTERM(t *testing.T) {
@@ -196,9 +214,10 @@ func TestConnectCtxCancelKillsProcessIgnoringSIGTERM(t *testing.T) {
 		t.Skip("slow: exercises WaitDelay backstop (SIGTERM ignored → SIGKILL)")
 	}
 
+	requireBinSleep(t)
 	installFakeSSH(t, `#!/bin/sh
 trap '' TERM
-sleep 60
+exec /bin/sleep 60
 `)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -227,11 +246,19 @@ sleep 60
 	if elapsed > 10*time.Second {
 		t.Fatalf("expected Wait to return within ~WaitDelay after ctx cancel, took %s", elapsed)
 	}
+	// WaitDelay is 5s. With SIGTERM trapped, the process must survive until
+	// SIGKILL fires after WaitDelay. Assert elapsed is at least 3s to prove
+	// the backstop is load-bearing — if WaitDelay were removed, Wait would
+	// hang past the ctx deadline until the full sleep completes.
+	if elapsed < 3*time.Second {
+		t.Fatalf("expected elapsed >= 3s (WaitDelay backstop), got %s", elapsed)
+	}
 }
 
 func TestSessionCloseTerminatesRunningSubprocess(t *testing.T) {
+	requireBinSleep(t)
 	installFakeSSH(t, `#!/bin/sh
-sleep 60
+exec /bin/sleep 60
 `)
 
 	sess, err := tunnelssh.Connect(context.Background(), "example.com", "true")
@@ -251,6 +278,12 @@ sleep 60
 	elapsed := time.Since(start)
 	if elapsed > 1*time.Second {
 		t.Fatalf("Close did not terminate subprocess promptly, took %s", elapsed)
+	}
+	// Lower bound helps detect if the subprocess self-exited due to PATH issues
+	// (which would exit instantly), vs being properly killed by Close (which
+	// takes at least the time to deliver and handle the signal).
+	if elapsed < 100*time.Microsecond {
+		t.Fatalf("Close returned suspiciously fast (%s); fake ssh may have self-exited before Close fired", elapsed)
 	}
 }
 
