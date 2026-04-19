@@ -61,7 +61,7 @@ scp notifytun myvm:~/notifytun
 ssh myvm 'install -m 0755 ~/notifytun ~/.local/bin/notifytun'
 ```
 
-If the remote binary is not in `PATH`, pass its location with `--remote-bin`.
+If the remote binary is not in `PATH`, `notifytun local` also checks `~/go/bin/notifytun` automatically, so a plain `go install` on the remote works out of the box. For any other install location, pass it with `--remote-bin`.
 
 ## Quickstart
 
@@ -230,7 +230,7 @@ That happens when:
 
 ### Remote binary cannot be found
 
-Install `notifytun` into the remote `PATH` or pass the correct remote location with `--remote-bin`.
+By default `notifytun local` tries `notifytun` on the remote `PATH` and then falls back to `~/go/bin/notifytun`. If neither exists, install `notifytun` into the remote `PATH` or pass the correct remote location with `--remote-bin`.
 
 ### Nothing shows up locally
 

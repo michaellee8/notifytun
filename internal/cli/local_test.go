@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -295,6 +296,100 @@ func TestBuildRemoteAttachCommandSupportsSpacesInRemoteBin(t *testing.T) {
 	}
 	if got := string(out); got != "attach\n" {
 		t.Fatalf("expected attach arg, got %q", got)
+	}
+}
+
+func TestBuildRemoteAttachCommandUsesFallbackForDefault(t *testing.T) {
+	cmd := buildRemoteAttachCommand(defaultRemoteBin)
+	if !strings.Contains(cmd, "command -v notifytun") {
+		t.Fatalf("expected PATH probe, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "$HOME/go/bin/notifytun") {
+		t.Fatalf("expected go/bin fallback, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "not found in PATH or ~/go/bin") {
+		t.Fatalf("expected error message, got %q", cmd)
+	}
+}
+
+func extractDefaultAttachScript(t *testing.T) string {
+	t.Helper()
+	cmd := buildRemoteAttachCommand(defaultRemoteBin)
+	quoted := strings.TrimPrefix(cmd, "sh -lc ")
+	if quoted == cmd {
+		t.Fatalf("expected sh -lc prefix, got %q", cmd)
+	}
+	script, err := strconv.Unquote(quoted)
+	if err != nil {
+		t.Fatalf("Unquote(%q): %v", quoted, err)
+	}
+	return script
+}
+
+func TestBuildRemoteAttachCommandFallbackPrefersPath(t *testing.T) {
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "notifytun")
+	stub := "#!/bin/sh\nprintf 'path:%s\\n' \"$1\"\n"
+	if err := os.WriteFile(binPath, []byte(stub), 0o755); err != nil {
+		t.Fatalf("WriteFile(binPath): %v", err)
+	}
+
+	homeDir := t.TempDir()
+
+	cmd := exec.Command("sh", "-c", extractDefaultAttachScript(t))
+	cmd.Env = []string{"PATH=" + binDir, "HOME=" + homeDir}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("CombinedOutput: %v (output: %s)", err, string(out))
+	}
+	if got := string(out); got != "path:attach\n" {
+		t.Fatalf("expected PATH copy to run, got %q", got)
+	}
+}
+
+func TestBuildRemoteAttachCommandFallbackUsesGoBin(t *testing.T) {
+	homeDir := t.TempDir()
+	goBinDir := filepath.Join(homeDir, "go", "bin")
+	if err := os.MkdirAll(goBinDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	stub := "#!/bin/sh\nprintf 'gobin:%s\\n' \"$1\"\n"
+	if err := os.WriteFile(filepath.Join(goBinDir, "notifytun"), []byte(stub), 0o755); err != nil {
+		t.Fatalf("WriteFile(go/bin/notifytun): %v", err)
+	}
+
+	emptyBin := t.TempDir()
+
+	cmd := exec.Command("sh", "-c", extractDefaultAttachScript(t))
+	cmd.Env = []string{"PATH=" + emptyBin, "HOME=" + homeDir}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("CombinedOutput: %v (output: %s)", err, string(out))
+	}
+	if got := string(out); got != "gobin:attach\n" {
+		t.Fatalf("expected go/bin copy to run, got %q", got)
+	}
+}
+
+func TestBuildRemoteAttachCommandFallbackFailsCleanly(t *testing.T) {
+	emptyBin := t.TempDir()
+	homeDir := t.TempDir()
+
+	cmd := exec.Command("sh", "-c", extractDefaultAttachScript(t))
+	cmd.Env = []string{"PATH=" + emptyBin, "HOME=" + homeDir}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit, got success (out: %s)", string(out))
+	}
+	if !strings.Contains(string(out), "notifytun: not found in PATH or ~/go/bin") {
+		t.Fatalf("expected error message on stderr, got %q", string(out))
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %T: %v", err, err)
+	}
+	if exitErr.ExitCode() != 127 {
+		t.Fatalf("expected exit 127, got %d", exitErr.ExitCode())
 	}
 }
 

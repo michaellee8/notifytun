@@ -28,6 +28,7 @@ const (
 	heartbeatTimeout          = 45 * time.Second
 	stableConnTime            = 60 * time.Second
 	defaultNotifQueueCapacity = 8
+	defaultRemoteBin          = "notifytun"
 )
 
 type localOptions struct {
@@ -68,7 +69,7 @@ type notifDispatcher struct {
 // NewLocalCmd connects to the remote VM and delivers desktop notifications locally.
 func NewLocalCmd() *cobra.Command {
 	opts := localOptions{
-		remoteBin: "notifytun",
+		remoteBin: defaultRemoteBin,
 		backend:   "auto",
 	}
 
@@ -246,6 +247,12 @@ func waitForReconnect(ctx context.Context, delay time.Duration) error {
 }
 
 func buildRemoteAttachCommand(remoteBin string) string {
+	if remoteBin == defaultRemoteBin {
+		script := `if command -v notifytun >/dev/null 2>&1; then exec notifytun attach; ` +
+			`elif [ -x "$HOME/go/bin/notifytun" ]; then exec "$HOME/go/bin/notifytun" attach; ` +
+			`else echo "notifytun: not found in PATH or ~/go/bin" >&2; exit 127; fi`
+		return "sh -lc " + strconv.Quote(script)
+	}
 	return "sh -lc " + strconv.Quote(shellQuote(remoteBin)+" attach")
 }
 
