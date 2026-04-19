@@ -41,7 +41,7 @@ If the SSH session drops, notifications continue queueing remotely. When the con
 Quick one-liner:
 
 ```bash
-go install github.com/michaellee8/notifytun
+go install github.com/michaellee8/notifytun/cmd/notifytun@latest
 ```
 
 Build the binary from the repo root:
