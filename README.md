@@ -38,6 +38,12 @@ If the SSH session drops, notifications continue queueing remotely. When the con
 
 ## Build and install
 
+Quick one-liner:
+
+```bash
+go install github.com/michaellee8/notifytun
+```
+
 Build the binary from the repo root:
 
 ```bash
