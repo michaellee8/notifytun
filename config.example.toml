@@ -15,10 +15,6 @@
 # auto detects based on OS
 # backend = "auto"
 
-# Path to SSH private key (optional)
-# If unset, uses SSH agent or keys from ~/.ssh/config
-# ssh-key = "~/.ssh/id_ed25519"
-
 # Custom notification command for generic backend
 # Receives notification JSON on stdin
 # notify-cmd = "/usr/local/bin/my-notifier"

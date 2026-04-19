@@ -107,7 +107,6 @@ Start from the included example:
 # target = "user@myvm"
 # remote-bin = "notifytun"
 # backend = "auto"
-# ssh-key = "~/.ssh/id_ed25519"
 # notify-cmd = "/usr/local/bin/my-notifier"
 ```
 
@@ -116,7 +115,6 @@ Supported keys:
 - `local.target`: SSH target for `notifytun local`
 - `local.remote-bin`: remote binary path or command name
 - `local.backend`: `auto`, `macos`, `linux`, or `generic`
-- `local.ssh-key`: optional SSH private key override
 - `local.notify-cmd`: command used by the `generic` backend
 
 Remote defaults:
@@ -142,7 +140,6 @@ Common flags:
 - `--remote-bin`: remote `notifytun` path or command name
 - `--backend`: `auto`, `macos`, `linux`, `generic`
 - `--notify-cmd`: required for `generic`, and also used when `auto` cannot select a native backend
-- `--ssh-key`: optional SSH key path
 - `--config`: explicit config file path
 
 ### `notifytun attach`
@@ -215,7 +212,7 @@ Set `--target` explicitly or add `local.target` to `~/.notifytun/config.toml`.
 
 - the target is reachable with normal `ssh`
 - the host key is already trusted
-- authentication works with your SSH agent, SSH config, or `--ssh-key`
+- authentication works with your SSH agent or SSH config
 
 ### Linux notifications do not appear
 

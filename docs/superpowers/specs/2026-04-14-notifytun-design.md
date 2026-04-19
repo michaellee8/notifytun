@@ -4,6 +4,8 @@
 **Module:** `github.com/michaellee8/notifytun`
 **Go version:** 1.23+
 
+> **Note (2026-04-19):** The SSH transport described here (section 9, "SSH connection") has been superseded by [2026-04-19-native-ssh-transport-design.md](2026-04-19-native-ssh-transport-design.md). The rest of this document still applies.
+
 ## 1. Overview
 
 notifytun is a single Go binary that tunnels notifications from a remote Linux VM to a local machine over SSH. No background daemons required — the `local` subcommand manages the SSH lifecycle directly using `x/crypto/ssh`.
