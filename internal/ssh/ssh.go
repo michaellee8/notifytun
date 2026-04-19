@@ -21,8 +21,6 @@ import (
 const (
 	defaultSSHPort = "22"
 	connectTimeout = 10 * time.Second
-	initialBackoff = 1 * time.Second
-	maxBackoff     = 30 * time.Second
 )
 
 // ConnConfig holds resolved SSH connection parameters.
@@ -205,35 +203,10 @@ func (s *Session) Close() error {
 	return errors.Join(sessionErr, clientErr)
 }
 
-// Backoff implements exponential reconnect backoff capped at 30 seconds.
-type Backoff struct {
-	current time.Duration
-}
-
 type clientHandshake struct {
 	conn  gossh.Conn
 	chans <-chan gossh.NewChannel
 	reqs  <-chan *gossh.Request
-}
-
-// NewBackoff creates a backoff starting at 1 second.
-func NewBackoff() *Backoff {
-	return &Backoff{current: initialBackoff}
-}
-
-// Next returns the current backoff and advances the sequence.
-func (b *Backoff) Next() time.Duration {
-	delay := b.current
-	b.current *= 2
-	if b.current > maxBackoff {
-		b.current = maxBackoff
-	}
-	return delay
-}
-
-// Reset returns the backoff to its initial value.
-func (b *Backoff) Reset() {
-	b.current = initialBackoff
 }
 
 func buildAuthMethods(keyPath string, keyPathOptional bool) ([]gossh.AuthMethod, func(), error) {
