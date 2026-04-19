@@ -36,14 +36,12 @@ type localOptions struct {
 	remoteBin  string
 	backend    string
 	notifyCmd  string
-	sshKey     string
 	configFile string
 
 	targetSet    bool
 	remoteBinSet bool
 	backendSet   bool
 	notifyCmdSet bool
-	sshKeySet    bool
 }
 
 type streamEvent struct {
@@ -84,7 +82,6 @@ func NewLocalCmd() *cobra.Command {
 			opts.remoteBinSet = cmd.Flags().Changed("remote-bin")
 			opts.backendSet = cmd.Flags().Changed("backend")
 			opts.notifyCmdSet = cmd.Flags().Changed("notify-cmd")
-			opts.sshKeySet = cmd.Flags().Changed("ssh-key")
 
 			if err := opts.loadAndApplyConfig(); err != nil {
 				return err
@@ -92,7 +89,7 @@ func NewLocalCmd() *cobra.Command {
 			if opts.target == "" {
 				return fmt.Errorf("--target is required (or set local.target in config)")
 			}
-			return runLocal(cmd.Context(), opts.target, opts.remoteBin, opts.backend, opts.notifyCmd, opts.sshKey)
+			return runLocal(cmd.Context(), opts.target, opts.remoteBin, opts.backend, opts.notifyCmd)
 		},
 	}
 
@@ -100,7 +97,6 @@ func NewLocalCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.remoteBin, "remote-bin", opts.remoteBin, "Path to notifytun on remote")
 	cmd.Flags().StringVar(&opts.backend, "backend", opts.backend, "Notifier backend: auto, macos, linux, generic")
 	cmd.Flags().StringVar(&opts.notifyCmd, "notify-cmd", "", "Custom command for generic backend")
-	cmd.Flags().StringVar(&opts.sshKey, "ssh-key", "", "Path to SSH private key")
 	cmd.Flags().StringVar(&opts.configFile, "config", "", "Config file path")
 
 	return cmd
@@ -141,9 +137,6 @@ func (o *localOptions) loadAndApplyConfig() error {
 			o.backend = value
 		}
 	}
-	if !o.sshKeySet {
-		o.sshKey = cfg.GetString("local.ssh-key")
-	}
 	if !o.notifyCmdSet {
 		o.notifyCmd = cfg.GetString("local.notify-cmd")
 	}
@@ -164,7 +157,7 @@ func configFileMissing(err error) bool {
 	return errors.As(err, &notFound) || errors.Is(err, os.ErrNotExist)
 }
 
-func runLocal(ctx context.Context, target, remoteBin, backend, notifyCmd, sshKey string) error {
+func runLocal(ctx context.Context, target, remoteBin, backend, notifyCmd string) error {
 	ctx, cancel := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -188,8 +181,7 @@ func runLocal(ctx context.Context, target, remoteBin, backend, notifyCmd, sshKey
 		}
 
 		log.Printf("connecting to %s...", target)
-		connCfg := tunnelssh.ResolveTarget(target, sshKey, "")
-		sess, err := tunnelssh.Connect(ctx, connCfg, remoteCommand)
+		sess, err := tunnelssh.Connect(ctx, target, remoteCommand)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -263,10 +255,10 @@ func shellQuote(value string) string {
 func logRemoteStderr(stderr io.Reader) {
 	scanner := bufio.NewScanner(stderr)
 	for scanner.Scan() {
-		log.Printf("remote stderr: %s", scanner.Text())
+		log.Printf("ssh stderr: %s", scanner.Text())
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		log.Printf("warning: remote stderr read failed: %v", err)
+		log.Printf("warning: ssh stderr read failed: %v", err)
 	}
 }
 

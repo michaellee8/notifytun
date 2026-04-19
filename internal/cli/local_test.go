@@ -139,7 +139,6 @@ target = "ops@example.com"
 remote-bin = "/opt/bin/notifytun"
 backend = "generic"
 notify-cmd = "cat"
-ssh-key = "/tmp/test-key"
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -167,9 +166,6 @@ ssh-key = "/tmp/test-key"
 	if opts.notifyCmd != "cat" {
 		t.Fatalf("expected notify cmd from config, got %q", opts.notifyCmd)
 	}
-	if opts.sshKey != "/tmp/test-key" {
-		t.Fatalf("expected ssh key from config, got %q", opts.sshKey)
-	}
 }
 
 func TestLocalOptionsPreserveExplicitFlags(t *testing.T) {
@@ -180,7 +176,6 @@ target = "ops@example.com"
 remote-bin = "/opt/bin/notifytun"
 backend = "generic"
 notify-cmd = "cat"
-ssh-key = "/tmp/test-key"
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -191,13 +186,11 @@ ssh-key = "/tmp/test-key"
 		remoteBin:    "notifytun-custom",
 		backend:      "linux",
 		notifyCmd:    "printf hi",
-		sshKey:       "/tmp/flag-key",
 		configFile:   configPath,
 		targetSet:    true,
 		remoteBinSet: true,
 		backendSet:   true,
 		notifyCmdSet: true,
-		sshKeySet:    true,
 	}
 
 	if err := opts.loadAndApplyConfig(); err != nil {
@@ -215,9 +208,6 @@ ssh-key = "/tmp/test-key"
 	}
 	if opts.notifyCmd != "printf hi" {
 		t.Fatalf("expected explicit notify cmd to win, got %q", opts.notifyCmd)
-	}
-	if opts.sshKey != "/tmp/flag-key" {
-		t.Fatalf("expected explicit ssh key to win, got %q", opts.sshKey)
 	}
 }
 
