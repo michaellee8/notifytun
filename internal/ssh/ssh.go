@@ -19,6 +19,8 @@ const (
 )
 
 // Session wraps a running `ssh` subprocess and exposes its stdio pipes.
+// Callers must call Wait or Close (or cancel the ctx passed to Connect) to
+// release the subprocess; otherwise it will run until it exits naturally.
 type Session struct {
 	Stdout io.Reader
 	Stderr io.Reader

@@ -62,31 +62,34 @@ printf '{"type":"heartbeat"}\n'
 	}
 	args := strings.Split(strings.TrimRight(string(argvBytes), "\n"), "\n")
 
-	// Required flags/options must all appear.
-	mustContain := []string{
-		"-T",
-		"BatchMode=yes",
-		"ConnectTimeout=10",
-		"ServerAliveInterval=15",
-		"ServerAliveCountMax=3",
-		"example.com",
-		"echo hi",
-	}
-	for _, want := range mustContain {
-		found := false
-		for _, a := range args {
-			if a == want || strings.Contains(a, want) {
-				found = true
-				break
+	// Pin each `-o key=value` as an actual flag pair, not just a loose token.
+	expectOptionPair := func(value string) {
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "-o" && args[i+1] == value {
+				return
 			}
 		}
-		if !found {
+		t.Fatalf("expected `-o %s` pair in argv, got %v", value, args)
+	}
+	expectOptionPair("BatchMode=yes")
+	expectOptionPair("ConnectTimeout=10")
+	expectOptionPair("ServerAliveInterval=15")
+	expectOptionPair("ServerAliveCountMax=3")
+
+	contains := func(needle string) bool {
+		for _, a := range args {
+			if a == needle {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{"-T", "--", "example.com", "echo hi"} {
+		if !contains(want) {
 			t.Fatalf("expected argv to contain %q, got %v", want, args)
 		}
 	}
 
-	// Positional ordering: target must come before remoteCmd, and both
-	// must come after the last `-o` group. We do not assert inter-`-o` order.
 	indexOf := func(needle string) int {
 		for i, a := range args {
 			if a == needle {
@@ -95,24 +98,16 @@ printf '{"type":"heartbeat"}\n'
 		}
 		return -1
 	}
+	sepIdx := indexOf("--")
 	targetIdx := indexOf("example.com")
 	remoteIdx := indexOf("echo hi")
-	if targetIdx < 0 || remoteIdx < 0 {
-		t.Fatalf("target or remote not in argv: %v", args)
+	if sepIdx < 0 || targetIdx < 0 || remoteIdx < 0 {
+		t.Fatalf("missing separator, target, or remote in argv: %v", args)
 	}
-	if !(targetIdx < remoteIdx) {
-		t.Fatalf("expected target before remoteCmd, got target=%d remote=%d", targetIdx, remoteIdx)
-	}
-	lastOpt := -1
-	for i, a := range args {
-		if strings.HasPrefix(a, "-") || i > 0 && args[i-1] == "-o" {
-			if i > lastOpt {
-				lastOpt = i
-			}
-		}
-	}
-	if !(targetIdx > lastOpt) {
-		t.Fatalf("expected target after last option; argv=%v", args)
+	// `--` must separate options from positional args, with target then remote after it.
+	if !(sepIdx < targetIdx && targetIdx < remoteIdx) {
+		t.Fatalf("expected order `--` < target < remote, got sep=%d target=%d remote=%d (%v)",
+			sepIdx, targetIdx, remoteIdx, args)
 	}
 }
 
@@ -193,6 +188,69 @@ sleep 60
 	}
 	if elapsed > 1*time.Second {
 		t.Fatalf("expected Wait to return promptly after ctx cancel, took %s", elapsed)
+	}
+}
+
+func TestConnectCtxCancelKillsProcessIgnoringSIGTERM(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow: exercises WaitDelay backstop (SIGTERM ignored → SIGKILL)")
+	}
+
+	installFakeSSH(t, `#!/bin/sh
+trap '' TERM
+sleep 60
+`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	sess, err := tunnelssh.Connect(ctx, "example.com", "true")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer sess.Close()
+
+	go func() {
+		_, _ = io.Copy(io.Discard, sess.Stdout)
+	}()
+	go func() {
+		_, _ = io.Copy(io.Discard, sess.Stderr)
+	}()
+
+	start := time.Now()
+	err = sess.Wait()
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected non-nil Wait error after ctx cancel with trapped SIGTERM")
+	}
+	// WaitDelay is 5s in the implementation. Allow generous slack for CI.
+	if elapsed > 10*time.Second {
+		t.Fatalf("expected Wait to return within ~WaitDelay after ctx cancel, took %s", elapsed)
+	}
+}
+
+func TestSessionCloseTerminatesRunningSubprocess(t *testing.T) {
+	installFakeSSH(t, `#!/bin/sh
+sleep 60
+`)
+
+	sess, err := tunnelssh.Connect(context.Background(), "example.com", "true")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	go func() {
+		_, _ = io.Copy(io.Discard, sess.Stdout)
+	}()
+	go func() {
+		_, _ = io.Copy(io.Discard, sess.Stderr)
+	}()
+
+	start := time.Now()
+	_ = sess.Close()
+	elapsed := time.Since(start)
+	if elapsed > 1*time.Second {
+		t.Fatalf("Close did not terminate subprocess promptly, took %s", elapsed)
 	}
 }
 
