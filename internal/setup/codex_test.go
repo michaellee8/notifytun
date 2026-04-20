@@ -12,8 +12,8 @@ import (
 
 func TestCodexNotifyGeneration(t *testing.T) {
 	cfg := setup.GenerateCodexNotifyConfig()
-	if !strings.Contains(cfg, `notify = ["notifytun", "emit", "--tool", "codex"]`) {
-		t.Fatal("expected codex notify config to call notifytun emit")
+	if !strings.Contains(cfg, `notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]`) {
+		t.Fatal("expected codex notify config to call notifytun emit-hook")
 	}
 }
 
@@ -45,7 +45,7 @@ func TestIsCodexConfiguredIgnoresTableScopedNotify(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(configPath, []byte(`[profiles.default]
-notify = ["notifytun", "emit", "--tool", "codex"]
+notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]
 model = "gpt-5"
 `), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -74,7 +74,7 @@ model = "gpt-5"
 		t.Fatalf("ReadFile: %v", err)
 	}
 	cfg := decodeTOML(t, data)
-	if got := rootNotifyValue(t, cfg); !equalStrings(got, []string{"notifytun", "emit", "--tool", "codex"}) {
+	if got := rootNotifyValue(t, cfg); !equalStrings(got, []string{"notifytun", "emit-hook", "--tool", "codex", "--event", "notify"}) {
 		t.Fatalf("expected root notify command, got %#v", got)
 	}
 	if profiles, ok := cfg["profiles"].(map[string]any); !ok || profiles == nil {
@@ -102,7 +102,7 @@ model = "gpt-5"
 		t.Fatalf("ReadFile: %v", err)
 	}
 	cfg := decodeTOML(t, data)
-	if got := rootNotifyValue(t, cfg); !equalStrings(got, []string{"notifytun", "emit", "--tool", "codex"}) {
+	if got := rootNotifyValue(t, cfg); !equalStrings(got, []string{"notifytun", "emit-hook", "--tool", "codex", "--event", "notify"}) {
 		t.Fatalf("expected root notify command, got %#v", got)
 	}
 }
@@ -112,9 +112,11 @@ func TestIsCodexConfiguredAcceptsMultilineRootNotify(t *testing.T) {
 	configPath := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(configPath, []byte(`notify = [
   "notifytun",
-  "emit",
+  "emit-hook",
   "--tool",
   "codex",
+  "--event",
+  "notify",
 ]
 
 [profiles.default]
@@ -154,7 +156,7 @@ model = "gpt-5"
 		t.Fatalf("expected old multiline notify to be removed, got %q", string(data))
 	}
 	cfg := decodeTOML(t, data)
-	if got := rootNotifyValue(t, cfg); !equalStrings(got, []string{"notifytun", "emit", "--tool", "codex"}) {
+	if got := rootNotifyValue(t, cfg); !equalStrings(got, []string{"notifytun", "emit-hook", "--tool", "codex", "--event", "notify"}) {
 		t.Fatalf("expected root notify command, got %#v", got)
 	}
 }

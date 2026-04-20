@@ -8,9 +8,9 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
-const codexNotifyConfigLine = `notify = ["notifytun", "emit", "--tool", "codex"]`
+const codexNotifyConfigLine = `notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]`
 
-var codexNotifyCommand = []string{"notifytun", "emit", "--tool", "codex"}
+var codexNotifyCommand = []string{"notifytun", "emit-hook", "--tool", "codex", "--event", "notify"}
 
 // CodexConfigurator manages ~/.codex/config.toml notify.
 type CodexConfigurator struct{}

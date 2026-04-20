@@ -138,7 +138,7 @@ func TestRemoteSetupNothingToConfigureWhenAlreadySetUp(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(.codex): %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(`notify = ["notifytun", "emit", "--tool", "codex"]`+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(`notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]`+"\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(codex config): %v", err)
 	}
 
