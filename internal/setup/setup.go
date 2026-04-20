@@ -1,10 +1,8 @@
 package setup
 
 import (
-	"fmt"
 	"os/exec"
 	"path/filepath"
-	"strings"
 )
 
 // Tool represents a detected AI coding tool and whether notifytun can configure it.
@@ -59,19 +57,3 @@ func lookPath(binary, pathEnv string) string {
 	return ""
 }
 
-// Preview summarizes what remote-setup would do for detected tools.
-func Preview(tools []Tool) string {
-	var sb strings.Builder
-	sb.WriteString("Detected tools:\n")
-	for _, tool := range tools {
-		switch {
-		case tool.Configured:
-			sb.WriteString(fmt.Sprintf("  * %s -- already configured\n", tool.Name))
-		case tool.Cfg != nil:
-			sb.WriteString(fmt.Sprintf("  * %s -- %s\n", tool.Name, tool.Cfg.PreviewAction("")))
-		default:
-			sb.WriteString(fmt.Sprintf("  * %s -- detected but hook setup not supported in v1\n", tool.Name))
-		}
-	}
-	return sb.String()
-}

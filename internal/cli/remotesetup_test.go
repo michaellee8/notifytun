@@ -11,7 +11,7 @@ import (
 )
 
 func TestRemoteSetupDryRunPrintsPreview(t *testing.T) {
-	t.Setenv("PATH", makeFakePath(t, "claude", "codex", "gemini"))
+	t.Setenv("PATH", makeFakePath(t, "claude", "codex", "gemini", "opencode"))
 	t.Setenv("HOME", t.TempDir())
 
 	cmd := NewRemoteSetupCmd()
@@ -27,19 +27,18 @@ func TestRemoteSetupDryRunPrintsPreview(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, "Detected tools:\n") {
-		t.Fatalf("expected preview header, got %q", out)
+	for _, want := range []string{
+		"Detected tools:\n",
+		"Claude Code -- will add Stop + Notification hooks to ~/.claude/settings.json",
+		"Codex CLI -- will set notify in ~/.codex/config.toml",
+		"Gemini CLI -- will add AfterAgent + Notification hooks to ~/.gemini/settings.json",
+		"OpenCode -- will write ~/.config/opencode/plugins/notifytun.js",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected preview to contain %q, got %q", want, out)
+		}
 	}
-	if !strings.Contains(out, "Claude Code -- will add Stop + Notification hooks to ~/.claude/settings.json") {
-		t.Fatalf("expected Claude preview, got %q", out)
-	}
-	if !strings.Contains(out, "Codex CLI -- will set notify in ~/.codex/config.toml") {
-		t.Fatalf("expected Codex preview, got %q", out)
-	}
-	if !strings.Contains(out, "Gemini CLI -- will add AfterAgent + Notification hooks to ~/.gemini/settings.json") {
-		t.Fatalf("expected Gemini preview, got %q", out)
-	}
-	if !strings.Contains(out, "(dry run - no changes applied)") && !strings.Contains(out, "(dry run — no changes applied)") {
+	if !strings.Contains(out, "(dry run — no changes applied)") {
 		t.Fatalf("expected dry-run note, got %q", out)
 	}
 	if stderr.Len() != 0 {
@@ -47,8 +46,8 @@ func TestRemoteSetupDryRunPrintsPreview(t *testing.T) {
 	}
 }
 
-func TestRemoteSetupApplyConfiguresSupportedTools(t *testing.T) {
-	t.Setenv("PATH", makeFakePath(t, "claude", "codex"))
+func TestRemoteSetupApplyConfiguresAllFourTools(t *testing.T) {
+	t.Setenv("PATH", makeFakePath(t, "claude", "codex", "gemini", "opencode"))
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -65,36 +64,51 @@ func TestRemoteSetupApplyConfiguresSupportedTools(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, "Apply? [Y/n] ") {
-		t.Fatalf("expected confirmation prompt, got %q", out)
-	}
-	if !strings.Contains(out, "Configured Claude Code hooks in") {
-		t.Fatalf("expected Claude success message, got %q", out)
-	}
-	if !strings.Contains(out, "Configured Codex CLI notify in") {
-		t.Fatalf("expected Codex success message, got %q", out)
+	for _, name := range []string{"Claude Code", "Codex CLI", "Gemini CLI", "OpenCode"} {
+		if !strings.Contains(out, "Configured "+name+" at ") {
+			t.Fatalf("expected 'Configured %s at ' in output, got %q", name, out)
+		}
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
 
-	claudeSettings, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	claude, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	if err != nil {
 		t.Fatalf("ReadFile(claude): %v", err)
 	}
-	if !strings.Contains(string(claudeSettings), "notifytun emit-hook --tool claude-code --event Stop") {
-		t.Fatalf("expected Claude settings to contain notifytun Stop hook, got %q", string(claudeSettings))
-	}
-	if !strings.Contains(string(claudeSettings), "notifytun emit-hook --tool claude-code --event Notification") {
-		t.Fatalf("expected Claude settings to contain notifytun Notification hook, got %q", string(claudeSettings))
+	for _, want := range []string{
+		"notifytun emit-hook --tool claude-code --event Stop",
+		"notifytun emit-hook --tool claude-code --event Notification",
+	} {
+		if !strings.Contains(string(claude), want) {
+			t.Fatalf("expected Claude settings to contain %q, got %q", want, string(claude))
+		}
 	}
 
-	codexConfig, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
-	if err != nil {
-		t.Fatalf("ReadFile(codex): %v", err)
-	}
 	if !setup.IsCodexConfigured(filepath.Join(home, ".codex", "config.toml")) {
-		t.Fatalf("expected Codex config to be structurally configured, got %q", string(codexConfig))
+		t.Fatal("expected Codex config to be structurally configured")
+	}
+
+	gemini, err := os.ReadFile(filepath.Join(home, ".gemini", "settings.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(gemini): %v", err)
+	}
+	for _, want := range []string{
+		"notifytun emit-hook --tool gemini --event AfterAgent",
+		"notifytun emit-hook --tool gemini --event Notification",
+	} {
+		if !strings.Contains(string(gemini), want) {
+			t.Fatalf("expected Gemini settings to contain %q, got %q", want, string(gemini))
+		}
+	}
+
+	pluginPath := filepath.Join(home, ".config", "opencode", "plugins", "notifytun.js")
+	if _, err := os.Stat(pluginPath); err != nil {
+		t.Fatalf("Stat(opencode plugin): %v", err)
+	}
+	if !setup.IsOpenCodeConfigured(pluginPath) {
+		t.Fatal("expected OpenCode plugin to match canonical content")
 	}
 }
 
@@ -209,7 +223,7 @@ func TestRemoteSetupContinuesAfterPerToolFailure(t *testing.T) {
 	if !strings.Contains(stderr.String(), "warning: failed to configure Claude Code:") {
 		t.Fatalf("expected Claude warning, got %q", stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "Configured Codex CLI notify in") {
+	if !strings.Contains(stdout.String(), "Configured Codex CLI at ") {
 		t.Fatalf("expected Codex success despite Claude failure, got %q", stdout.String())
 	}
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/michaellee8/notifytun/internal/setup"
@@ -35,7 +34,7 @@ func NewRemoteSetupCmd() *cobra.Command {
 			}
 
 			markConfigured(home, tools)
-			writePreview(cmd.OutOrStdout(), tools)
+			writePreview(cmd.OutOrStdout(), home, tools)
 
 			if dryRun {
 				fmt.Fprintln(cmd.OutOrStdout(), "(dry run — no changes applied)")
@@ -63,24 +62,32 @@ func NewRemoteSetupCmd() *cobra.Command {
 
 func markConfigured(home string, tools []setup.Tool) {
 	for i := range tools {
-		if tools[i].Cfg != nil {
-			tools[i].Configured = tools[i].Cfg.IsConfigured(home)
+		if tools[i].Cfg == nil {
+			continue
 		}
+		tools[i].Configured = tools[i].Cfg.IsConfigured(home)
 	}
 }
 
-func writePreview(w io.Writer, tools []setup.Tool) {
-	preview := setup.Preview(tools)
-	if strings.HasSuffix(preview, "\n") {
-		fmt.Fprint(w, preview)
-		return
+func writePreview(w io.Writer, home string, tools []setup.Tool) {
+	var sb strings.Builder
+	sb.WriteString("Detected tools:\n")
+	for _, tool := range tools {
+		switch {
+		case tool.Configured:
+			sb.WriteString(fmt.Sprintf("  * %s -- already configured\n", tool.Name))
+		case tool.Cfg != nil:
+			sb.WriteString(fmt.Sprintf("  * %s -- %s\n", tool.Name, tool.Cfg.PreviewAction(home)))
+		default:
+			sb.WriteString(fmt.Sprintf("  * %s -- detected but hook setup not supported in v1\n", tool.Name))
+		}
 	}
-	fmt.Fprintln(w, preview)
+	fmt.Fprint(w, sb.String())
 }
 
 func hasConfigWork(tools []setup.Tool) bool {
 	for _, tool := range tools {
-		if tool.Supported && !tool.Configured {
+		if tool.Cfg != nil && !tool.Configured {
 			return true
 		}
 	}
@@ -102,25 +109,13 @@ func confirmApply(in io.Reader, out io.Writer) bool {
 
 func applyToolConfig(stdout, stderr io.Writer, home string, tools []setup.Tool) {
 	for _, tool := range tools {
-		if !tool.Supported || tool.Configured {
+		if tool.Cfg == nil || tool.Configured {
 			continue
 		}
-
-		switch tool.Name {
-		case "Claude Code":
-			settingsPath := filepath.Join(home, ".claude", "settings.json")
-			if err := setup.ApplyClaudeHook(settingsPath); err != nil {
-				fmt.Fprintf(stderr, "warning: failed to configure %s: %v\n", tool.Name, err)
-				continue
-			}
-			fmt.Fprintf(stdout, "Configured %s hooks in %s\n", tool.Name, settingsPath)
-		case "Codex CLI":
-			configPath := filepath.Join(home, ".codex", "config.toml")
-			if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
-				fmt.Fprintf(stderr, "warning: failed to configure %s: %v\n", tool.Name, err)
-				continue
-			}
-			fmt.Fprintf(stdout, "Configured %s notify in %s\n", tool.Name, configPath)
+		if err := tool.Cfg.Apply(home); err != nil {
+			fmt.Fprintf(stderr, "warning: failed to configure %s: %v\n", tool.Name, err)
+			continue
 		}
+		fmt.Fprintf(stdout, "Configured %s at %s\n", tool.Name, tool.Cfg.ConfigPath(home))
 	}
 }
