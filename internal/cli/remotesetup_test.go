@@ -36,8 +36,8 @@ func TestRemoteSetupDryRunPrintsPreview(t *testing.T) {
 	if !strings.Contains(out, "Codex CLI -- will set notify in ~/.codex/config.toml") {
 		t.Fatalf("expected Codex preview, got %q", out)
 	}
-	if !strings.Contains(out, "Gemini CLI -- detected but hook setup not supported in v1") {
-		t.Fatalf("expected Gemini unsupported preview, got %q", out)
+	if !strings.Contains(out, "Gemini CLI -- will add AfterAgent + Notification hooks to ~/.gemini/settings.json") {
+		t.Fatalf("expected Gemini preview, got %q", out)
 	}
 	if !strings.Contains(out, "(dry run - no changes applied)") && !strings.Contains(out, "(dry run — no changes applied)") {
 		t.Fatalf("expected dry-run note, got %q", out)

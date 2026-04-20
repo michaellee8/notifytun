@@ -25,4 +25,5 @@ type Configurator interface {
 var Registered = []Configurator{
 	&ClaudeConfigurator{},
 	&CodexConfigurator{},
+	&GeminiConfigurator{},
 }
