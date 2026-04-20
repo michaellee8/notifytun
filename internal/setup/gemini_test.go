@@ -98,3 +98,67 @@ func TestApplyGeminiHookPreservesUnrelatedEntries(t *testing.T) {
 		t.Fatalf("expected exactly one AfterAgent entry, got %q", content)
 	}
 }
+
+func TestApplyGeminiHookMigratesLegacyEmitEntries(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{
+  "hooks": {
+    "AfterAgent": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit --tool gemini --title 'Task complete'"
+          }
+        ]
+      },
+      {
+        "matcher": "preserve",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo keep-me"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit --tool gemini --title 'Needs attention'"
+          }
+        ]
+      }
+    ]
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := setup.ApplyGeminiHook(settingsPath); err != nil {
+		t.Fatalf("ApplyGeminiHook: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "'Task complete'") || strings.Contains(content, "'Needs attention'") {
+		t.Fatalf("expected legacy notifytun emit entries to be removed, got %q", content)
+	}
+	if !strings.Contains(content, "echo keep-me") {
+		t.Fatal("expected unrelated hook to be preserved")
+	}
+	if strings.Count(content, "notifytun emit-hook --tool gemini --event AfterAgent") != 1 {
+		t.Fatalf("expected exactly one emit-hook AfterAgent entry, got %q", content)
+	}
+	if strings.Count(content, "notifytun emit-hook --tool gemini --event Notification") != 1 {
+		t.Fatalf("expected exactly one emit-hook Notification entry, got %q", content)
+	}
+}
