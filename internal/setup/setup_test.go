@@ -41,8 +41,8 @@ func TestDetectToolsFullMatrix(t *testing.T) {
 	}
 	if tool, ok := found["OpenCode"]; !ok {
 		t.Fatal("expected OpenCode to be detected")
-	} else if tool.Supported {
-		t.Fatal("expected OpenCode to be detected as unsupported in v1")
+	} else if !tool.Supported {
+		t.Fatal("expected OpenCode to be detected as supported")
 	}
 }
 

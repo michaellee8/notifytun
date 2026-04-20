@@ -142,6 +142,14 @@ func TestRemoteSetupNothingToConfigureWhenAlreadySetUp(t *testing.T) {
 		t.Fatalf("WriteFile(codex config): %v", err)
 	}
 
+	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode", "plugins"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(opencode plugins): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "plugins", "notifytun.js"),
+		[]byte(setup.GenerateOpenCodePlugin()), 0o644); err != nil {
+		t.Fatalf("WriteFile(opencode plugin): %v", err)
+	}
+
 	cmd := NewRemoteSetupCmd()
 
 	var stdout bytes.Buffer
@@ -160,8 +168,8 @@ func TestRemoteSetupNothingToConfigureWhenAlreadySetUp(t *testing.T) {
 	if !strings.Contains(out, "Codex CLI -- already configured") {
 		t.Fatalf("expected Codex already-configured preview, got %q", out)
 	}
-	if !strings.Contains(out, "OpenCode -- detected but hook setup not supported in v1") {
-		t.Fatalf("expected unsupported preview, got %q", out)
+	if !strings.Contains(out, "OpenCode -- already configured") {
+		t.Fatalf("expected OpenCode already-configured preview, got %q", out)
 	}
 	if !strings.Contains(out, "Nothing to configure — all supported tools already set up.") {
 		t.Fatalf("expected nothing-to-configure message, got %q", out)

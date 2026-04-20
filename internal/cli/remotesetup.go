@@ -63,11 +63,8 @@ func NewRemoteSetupCmd() *cobra.Command {
 
 func markConfigured(home string, tools []setup.Tool) {
 	for i := range tools {
-		switch tools[i].Name {
-		case "Claude Code":
-			tools[i].Configured = setup.IsClaudeConfigured(filepath.Join(home, ".claude", "settings.json"))
-		case "Codex CLI":
-			tools[i].Configured = setup.IsCodexConfigured(filepath.Join(home, ".codex", "config.toml"))
+		if tools[i].Cfg != nil {
+			tools[i].Configured = tools[i].Cfg.IsConfigured(home)
 		}
 	}
 }

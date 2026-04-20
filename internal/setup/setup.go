@@ -17,44 +17,25 @@ type Tool struct {
 	Cfg        Configurator
 }
 
-// knownTools is the detection list. It includes tools for which we do not yet
-// have a Configurator registered — those return with Supported=false and Cfg=nil.
-// Later tasks register more Configurators and eventually this list goes away.
-var knownTools = []struct {
-	Name     string
-	Binaries []string
-}{
-	{Name: "Claude Code", Binaries: []string{"claude", "claude-code"}},
-	{Name: "Codex CLI", Binaries: []string{"codex"}},
-	{Name: "Gemini CLI", Binaries: []string{"gemini"}},
-	{Name: "OpenCode", Binaries: []string{"opencode"}},
-}
-
 // DetectTools scans the provided path list or the current PATH when pathEnv is empty.
 func DetectTools(pathEnv string) []Tool {
-	configurators := map[string]Configurator{}
-	for _, cfg := range Registered {
-		configurators[cfg.Name()] = cfg
-	}
-
 	var tools []Tool
-	for _, known := range knownTools {
-		tool := Tool{Name: known.Name}
-		for _, binary := range known.Binaries {
+	for _, cfg := range Registered {
+		tool := Tool{
+			Name:      cfg.Name(),
+			Supported: true,
+			Cfg:       cfg,
+		}
+		for _, binary := range cfg.Binaries() {
 			if path := lookPath(binary, pathEnv); path != "" {
 				tool.Binary = path
 				tool.Detected = true
 				break
 			}
 		}
-		if !tool.Detected {
-			continue
+		if tool.Detected {
+			tools = append(tools, tool)
 		}
-		if cfg, ok := configurators[known.Name]; ok {
-			tool.Cfg = cfg
-			tool.Supported = true
-		}
-		tools = append(tools, tool)
 	}
 	return tools
 }

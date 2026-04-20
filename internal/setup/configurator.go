@@ -26,4 +26,5 @@ var Registered = []Configurator{
 	&ClaudeConfigurator{},
 	&CodexConfigurator{},
 	&GeminiConfigurator{},
+	&OpenCodeConfigurator{},
 }
