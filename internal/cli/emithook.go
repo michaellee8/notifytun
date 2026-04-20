@@ -109,10 +109,16 @@ func NewEmitHookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "emit-hook [payload-json]",
 		Short:         "Record a notification derived from an agent hook payload",
-		Args:          cobra.MaximumNArgs(1),
+		Args:          cobra.ArbitraryArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 1 {
+				LogHookError(dbPath, "emit-hook", "parse",
+					fmt.Errorf("unexpected positional argument count: got %d, want 0 or 1", len(args)))
+				args = args[:1]
+			}
+
 			dispatch, ok := lookupDispatch(tool, event)
 			if !ok {
 				LogHookError(dbPath, "emit-hook", "dispatch",

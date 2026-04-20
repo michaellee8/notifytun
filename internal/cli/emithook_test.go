@@ -170,6 +170,29 @@ func TestEmitHookTruncatesBodyTo180Runes(t *testing.T) {
 	}
 }
 
+func TestEmitHookTruncatesBodyTo180RunesOnMultibyte(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "notifytun.db")
+	// Each "あ" is 3 bytes in UTF-8. A byte-based truncator would either
+	// produce 60 runes (s[:180]) or split a codepoint (leaving U+FFFD at
+	// the tail). A rune-based truncator produces exactly 180 runes / 540 bytes.
+	long := strings.Repeat("あ", 500)
+	runEmitHook(t, dbPath,
+		`{"last_assistant_message":"`+long+`"}`,
+		"--tool", "claude-code", "--event", "Stop")
+
+	row := readSingleRow(t, dbPath)
+	if got := len([]rune(row.Body)); got != 180 {
+		t.Fatalf("expected 180 runes, got %d", got)
+	}
+	if got := len(row.Body); got != 540 {
+		t.Fatalf("expected 540 bytes (180 runes × 3 bytes), got %d", got)
+	}
+	if strings.ContainsRune(row.Body, 0xFFFD) {
+		t.Fatal("truncation introduced U+FFFD — split a codepoint")
+	}
+}
+
 func TestEmitHookEmptyPayloadProducesTitleOnlyRow(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "notifytun.db")
@@ -259,5 +282,40 @@ func TestEmitHookDBFailureLogsAndExitsZero(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "\temit-hook\tdb-open:") {
 		t.Fatalf("unexpected log contents: %q", string(data))
+	}
+}
+
+func TestEmitHookTwoPositionalArgsLogsAndExitsZero(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "notifytun.db")
+
+	cmd := cli.NewEmitHookCmd()
+	cmd.SetArgs([]string{
+		"--db", dbPath,
+		"--socket", filepath.Join(dir, "nowhere.sock"),
+		"--tool", "claude-code", "--event", "Stop",
+		`{"last_assistant_message":"first"}`,
+		`{"last_assistant_message":"second"}`,
+	})
+	cmd.SetIn(strings.NewReader(""))
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error, want nil: %v", err)
+	}
+
+	logData, err := os.ReadFile(filepath.Join(dir, "notifytun-errors.log"))
+	if err != nil {
+		t.Fatalf("expected error log: %v", err)
+	}
+	if !strings.Contains(string(logData), "\temit-hook\tparse: unexpected positional argument count") {
+		t.Fatalf("expected unexpected-arg-count log line, got %q", string(logData))
+	}
+
+	// First arg should still have been processed (title-only + parsed body).
+	row := readSingleRow(t, dbPath)
+	if row.Title != "Claude Code: Task complete" {
+		t.Fatalf("title: %q", row.Title)
+	}
+	if row.Body != "first" {
+		t.Fatalf("expected body from first arg only, got %q", row.Body)
 	}
 }
