@@ -136,6 +136,38 @@ func TestCloseRemovesSocket(t *testing.T) {
 	}
 }
 
+func TestWaitReturnsPromptlyOnParentCancelEvenWithDeadline(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "wait.sock")
+	listener, err := socket.Listen(sockPath)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer listener.Close()
+
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Caller-style: wrap parent with a deadline far in the future.
+	ctx, ctxCancel := context.WithTimeout(parent, 10*time.Second)
+	defer ctxCancel()
+
+	done := make(chan error, 1)
+	go func() { done <- listener.Wait(ctx) }()
+
+	time.Sleep(30 * time.Millisecond)
+	cancel() // cancel parent, not the deadline'd child
+
+	start := time.Now()
+	select {
+	case <-done:
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("Wait took %s after parent cancel, want <1s", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return within 2s of parent cancel")
+	}
+}
+
 func TestStaleSocketRemoved(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.sock")
 

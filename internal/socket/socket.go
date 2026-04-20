@@ -39,20 +39,23 @@ func (l *Listener) Wait(ctx context.Context) error {
 		if err := l.conn.SetReadDeadline(deadline); err != nil {
 			return fmt.Errorf("set read deadline: %w", err)
 		}
-	} else {
-		done := make(chan struct{})
-		defer close(done)
-
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = l.conn.SetReadDeadline(time.Now())
-			case <-done:
-			}
-		}()
 	}
 	defer func() {
 		_ = l.conn.SetReadDeadline(time.Time{})
+	}()
+
+	// Always watch for ctx cancellation. If a deadline is set, the read
+	// deadline will fire first in the deadline case; otherwise ctx.Done
+	// wins if the parent context is cancelled before any wakeup arrives.
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = l.conn.SetReadDeadline(time.Now())
+		case <-done:
+		}
 	}()
 
 	buf := make([]byte, 1)
