@@ -32,32 +32,7 @@ func (c *ClaudeConfigurator) Apply(home string) error {
 
 // IsClaudeConfigured reports whether both notifytun Claude hooks are already present.
 func IsClaudeConfigured(settingsPath string) bool {
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		return false
-	}
-
-	var settings map[string]any
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return false
-	}
-
-	hooks, ok := settings["hooks"].(map[string]any)
-	if !ok {
-		return false
-	}
-
-	stopEntries, ok := hooks["Stop"].([]any)
-	if !ok {
-		return false
-	}
-	notificationEntries, ok := hooks["Notification"].([]any)
-	if !ok {
-		return false
-	}
-
-	return hasHookCommand(stopEntries, claudeStopCommand) &&
-		hasHookCommand(notificationEntries, claudeNotificationCommand)
+	return JSONHooksConfigured(settingsPath, claudeLegacyHookEvents())
 }
 
 // ApplyClaudeHook merges notifytun Claude hooks into the given settings file.
@@ -65,51 +40,14 @@ func ApplyClaudeHook(settingsPath string) error {
 	if IsClaudeConfigured(settingsPath) {
 		return nil
 	}
+	return ApplyJSONHooks(settingsPath, claudeLegacyHookEvents(), nil)
+}
 
-	settings, err := readSettings(settingsPath)
-	if err != nil {
-		return err
+func claudeLegacyHookEvents() []JSONHookEvent {
+	return []JSONHookEvent{
+		{Event: "Stop", Command: claudeStopCommand},
+		{Event: "Notification", Command: claudeNotificationCommand},
 	}
-
-	hooks, err := mapValue(settings["hooks"], "hooks")
-	if err != nil {
-		return err
-	}
-
-	stopEntries, err := sliceValue(hooks["Stop"], "hooks.Stop")
-	if err != nil {
-		return err
-	}
-	notificationEntries, err := sliceValue(hooks["Notification"], "hooks.Notification")
-	if err != nil {
-		return err
-	}
-
-	if !hasHookCommand(stopEntries, claudeStopCommand) {
-		stopEntries = append(stopEntries, newClaudeEntry(claudeStopCommand))
-	}
-	if !hasHookCommand(notificationEntries, claudeNotificationCommand) {
-		notificationEntries = append(notificationEntries, newClaudeEntry(claudeNotificationCommand))
-	}
-
-	hooks["Stop"] = stopEntries
-	hooks["Notification"] = notificationEntries
-	settings["hooks"] = hooks
-
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
-		return fmt.Errorf("create Claude settings dir: %w", err)
-	}
-
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal Claude settings: %w", err)
-	}
-	data = append(data, '\n')
-
-	if err := os.WriteFile(settingsPath, data, 0o644); err != nil {
-		return fmt.Errorf("write Claude settings: %w", err)
-	}
-	return nil
 }
 
 // GenerateClaudeHook returns the JSON snippet notifytun writes into Claude settings.
