@@ -570,24 +570,24 @@ Claude hooks call `agentnotify emit`.
 ```json
 {
   "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit-hook --tool claude-code --event Stop"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "/home/ubuntu/bin/agentnotify emit --app claude --kind needs_input --title 'Claude Code' --body 'Claude Code needs your attention'"
-          }
-        ]
-      }
-    ],
-    "StopFailure": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/ubuntu/bin/agentnotify emit --app claude --kind failure --title 'Claude Code' --body 'Claude turn failed'"
+            "command": "notifytun emit-hook --tool claude-code --event Notification"
           }
         ]
       }
@@ -596,6 +596,8 @@ Claude hooks call `agentnotify emit`.
 }
 ```
 
+Hook commands always exit 0. Any DB or logging failure is written to `~/.notifytun/notifytun-errors.log`.
+
 ## 17. Codex integration
 
 Use the stable `notify` command hook in `~/.codex/config.toml`.
@@ -603,14 +605,69 @@ Use the stable `notify` command hook in `~/.codex/config.toml`.
 ### Example
 
 ```toml
-notify = ["/home/ubuntu/bin/agentnotify", "emit-codex"]
+notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]
 ```
 
 ### Notes
 
-* `emit-codex` must rely on its own default DB and socket path resolution.
+* `emit-hook` accepts the Codex JSON payload as a trailing positional argument and derives title/body from it.
 * Do not assume shell expansion in TOML array args.
 * Do not use experimental Codex hooks in v1.
+* Hook always exits 0; errors go to `~/.notifytun/notifytun-errors.log`.
+
+## 17a. Gemini CLI integration
+
+Use `AfterAgent` and `Notification` hooks in `~/.gemini/settings.json`.
+
+### Example
+
+```json
+{
+  "hooks": {
+    "AfterAgent": [
+      {
+        "command": "notifytun emit-hook --tool gemini --event AfterAgent"
+      }
+    ],
+    "Notification": [
+      {
+        "command": "notifytun emit-hook --tool gemini --event Notification"
+      }
+    ]
+  }
+}
+```
+
+### Notes
+
+* `AfterAgent` fires after each agent turn completes; the hook payload carries the last assistant message.
+* `Notification` fires when Gemini needs user attention.
+* Hook always exits 0; errors go to `~/.notifytun/notifytun-errors.log`.
+
+## 17b. OpenCode integration
+
+Uses a plugin file at `~/.config/opencode/plugins/notifytun.js`.
+
+### Example plugin (installed by `remote-setup`)
+
+```js
+// notifytun.js — installed by notifytun remote-setup
+import { subscribe } from "@opencode-ai/sdk";
+import { execFileSync } from "child_process";
+
+subscribe("turn-complete", (event) => {
+  const body = event?.lastAssistantMessage ?? "";
+  execFileSync("notifytun", [
+    "emit-hook", "--tool", "opencode", "--event", "turn-complete",
+    "--body", body,
+  ], { stdio: "ignore" });
+});
+```
+
+### Notes
+
+* The plugin reads the last assistant message via the OpenCode SDK.
+* `notifytun emit-hook` always exits 0; any error is appended to `~/.notifytun/notifytun-errors.log`.
 
 ## 18. Local notifier backends
 

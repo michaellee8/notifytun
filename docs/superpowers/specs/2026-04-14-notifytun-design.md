@@ -6,6 +6,11 @@
 
 > **Note (2026-04-19):** The SSH transport described here (section 9, "SSH connection") has been superseded by [2026-04-19-native-ssh-transport-design.md](2026-04-19-native-ssh-transport-design.md). The rest of this document still applies.
 
+> **Note:** The `remote-setup` scope in this document is superseded for the
+> hook-configuration portion by `docs/superpowers/specs/2026-04-20-remote-setup-all-agents-design.md`.
+> Everything else in this document (SSH transport, SQLite protocol, notifier
+> backends, etc.) still applies.
+
 ## 1. Overview
 
 notifytun is a single Go binary that tunnels notifications from a remote Linux VM to a local machine over SSH. No background daemons required — the `local` subcommand manages the SSH lifecycle directly using `x/crypto/ssh`.

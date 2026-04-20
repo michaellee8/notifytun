@@ -9,7 +9,7 @@
 - SSH-based transport with automatic reconnects
 - Native local notifications on macOS and Linux
 - Generic command backend for unsupported platforms
-- Helper command to wire up Claude Code and Codex hooks on the remote machine
+- Helper command to wire up Claude Code, Codex CLI, Gemini CLI, and OpenCode hooks on the remote machine
 
 ## How it works
 
@@ -164,10 +164,15 @@ Detects supported AI tools on the remote host, shows what will be configured, an
 
 Current behavior:
 
-- Claude Code: adds `Stop` and `Notification` hooks in `~/.claude/settings.json`
-- Codex CLI: sets `notify = ["notifytun", "emit", "--tool", "codex"]` in `~/.codex/config.toml`
-- Gemini CLI: detection only, no automatic configuration in v1
-- OpenCode: detection only, no automatic configuration in v1
+- **Claude Code** → `Stop` and `Notification` hooks in `~/.claude/settings.json`
+- **Codex CLI** → root-level `notify` array in `~/.codex/config.toml`
+- **Gemini CLI** → `AfterAgent` and `Notification` hooks in `~/.gemini/settings.json`
+- **OpenCode** → plugin file at `~/.config/opencode/plugins/notifytun.js`
+
+Hook commands always exit 0 — any DB or logging failure is appended to
+`notifytun-errors.log` next to the SQLite database (default
+`~/.notifytun/notifytun-errors.log`) so a notifytun outage can never
+block the agent mid-turn.
 
 ### `notifytun test-notify`
 
@@ -181,24 +186,56 @@ notifytun test-notify --backend auto
 
 ## AI tool integration
 
-`remote-setup` is the easiest way to wire supported tools into `notifytun`, but the integration model is simple: remote tool hooks call `notifytun emit`.
+`remote-setup` is the easiest way to wire supported tools into `notifytun`, but the integration model is simple: remote tool hooks call `notifytun emit-hook`.
+
+### Remote setup
+
+`notifytun remote-setup` detects supported agents on `PATH` and installs
+the hook integration for each:
+
+- **Claude Code** → `Stop` and `Notification` hooks in `~/.claude/settings.json`
+- **Codex CLI** → root-level `notify` array in `~/.codex/config.toml`
+- **Gemini CLI** → `AfterAgent` and `Notification` hooks in `~/.gemini/settings.json`
+- **OpenCode** → plugin file at `~/.config/opencode/plugins/notifytun.js`
+
+Hook commands always exit 0 — any DB or logging failure is appended to
+`notifytun-errors.log` next to the SQLite database (default
+`~/.notifytun/notifytun-errors.log`) so a notifytun outage can never
+block the agent mid-turn.
+
+Notifications include the agent's last message text. For Claude `Stop`
+and Gemini `AfterAgent`, the text comes straight from the hook payload.
+For Claude/Gemini `Notification`, the attention prompt is passed
+through. For OpenCode, the plugin reads the last assistant message via
+the OpenCode SDK and pipes it to `notifytun emit-hook`.
 
 ### Claude Code
 
-`remote-setup` adds these commands:
+`remote-setup` adds these hook commands:
 
-- `notifytun emit --tool claude-code --title 'Task complete'`
-- `notifytun emit --tool claude-code --title 'Needs attention'`
+- `notifytun emit-hook --tool claude-code --event Stop`
+- `notifytun emit-hook --tool claude-code --event Notification`
 
 ### Codex CLI
 
 `remote-setup` writes this root-level config entry:
 
 ```toml
-notify = ["notifytun", "emit", "--tool", "codex"]
+notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]
 ```
 
-When Codex passes its JSON notify payload, `notifytun emit` will derive a conservative title/body if you do not supply `--title`.
+When Codex passes its JSON notify payload, `notifytun emit-hook` will derive a conservative title/body from the payload.
+
+### Gemini CLI
+
+`remote-setup` adds these hook commands to `~/.gemini/settings.json`:
+
+- `notifytun emit-hook --tool gemini --event AfterAgent`
+- `notifytun emit-hook --tool gemini --event Notification`
+
+### OpenCode
+
+`remote-setup` installs a plugin at `~/.config/opencode/plugins/notifytun.js` that reads the last assistant message via the OpenCode SDK and calls `notifytun emit-hook --tool opencode --event turn-complete`.
 
 ## Troubleshooting
 
@@ -233,7 +270,7 @@ By default `notifytun local` tries `notifytun` on the remote `PATH` and then fal
 
 Check the full path:
 
-- remote hooks are actually calling `notifytun emit`
+- remote hooks are actually calling `notifytun emit-hook` (or `notifytun emit`)
 - `notifytun local` is running on your machine
 - the SSH session is connected
 
