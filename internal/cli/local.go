@@ -358,6 +358,15 @@ func newNotifDispatcher(parent context.Context, n notifier.Notifier, capacity in
 	}
 	dispatcher.cond = sync.NewCond(&dispatcher.mu)
 	go dispatcher.run()
+	// Wake any cond.Wait() in next() when ctx is cancelled, so run() exits
+	// even if the caller never calls Close(). Broadcast is safe to call
+	// multiple times, so this coexists with Close()'s own Broadcast.
+	go func() {
+		<-ctx.Done()
+		dispatcher.mu.Lock()
+		dispatcher.cond.Broadcast()
+		dispatcher.mu.Unlock()
+	}()
 	return dispatcher
 }
 

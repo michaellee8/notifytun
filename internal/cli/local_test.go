@@ -642,6 +642,61 @@ func TestHandleNotifLogsDeliveryFailure(t *testing.T) {
 	}
 }
 
+func TestNotifDispatcherExitsOnCtxCancelWithoutClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	n := &recordingNotifier{}
+	d := newNotifDispatcher(ctx, n, defaultNotifQueueCapacity)
+
+	// Ensure run() has entered cond.Wait() before cancelling, so we
+	// actually exercise the path where the dispatcher is parked and
+	// needs to be woken by the ctx watcher rather than racing to the
+	// top-of-loop ctx.Err() check before ever waiting.
+	waitForDispatcherParked(t, d, time.Second)
+
+	// Cancel the parent context and expect run() to return on its own,
+	// without anyone ever calling Close().
+	cancel()
+
+	select {
+	case <-d.done:
+	case <-time.After(time.Second):
+		t.Fatal("dispatcher goroutine did not exit after ctx cancel")
+	}
+
+	// Calling Close after run has already exited must still succeed and
+	// must not deadlock on <-d.done.
+	if err := d.Close(); err != nil {
+		t.Fatalf("Close after implicit exit: %v", err)
+	}
+}
+
+// waitForDispatcherParked spins until the dispatcher's run loop is blocked
+// in cond.Wait(). We detect it indirectly: while cond.Wait is unlocked, the
+// test goroutine can successfully Lock the dispatcher mutex. But that's
+// true even before run() started, so we also check queue length is 0 and
+// no message is pending.
+func waitForDispatcherParked(t *testing.T, d *notifDispatcher, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		d.mu.Lock()
+		parked := len(d.queue) == 0 && d.droppedCount == 0 && !d.closed && d.ctx.Err() == nil
+		d.mu.Unlock()
+		if parked {
+			// Give the scheduler a brief moment to make sure run() has
+			// actually reached cond.Wait() (acquired-then-released the
+			// mutex is the best indirect signal we have).
+			time.Sleep(20 * time.Millisecond)
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dispatcher never parked")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestBuildRemoteAttachCommandLiteralizesShellMetacharacters(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "pwned")
