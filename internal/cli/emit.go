@@ -18,6 +18,7 @@ type codexNotifyPayload struct {
 }
 
 // NewEmitCmd records a notification from a tool hook.
+// Always exits 0; errors go to notifytun-errors.log next to the DB.
 func NewEmitCmd() *cobra.Command {
 	var (
 		title      string
@@ -50,17 +51,20 @@ func NewEmitCmd() *cobra.Command {
 			}
 
 			if title == "" {
-				return silentExit(1, errors.New("missing notification title"))
+				LogHookError(dbPath, "emit", "parse", errors.New("missing notification title"))
+				return nil
 			}
 
 			d, err := db.Open(dbPath)
 			if err != nil {
-				return silentExit(1, err)
+				LogHookError(dbPath, "emit", "db-open", err)
+				return nil
 			}
 			defer d.Close()
 
 			if _, err := d.Insert(title, body, tool); err != nil {
-				return silentExit(1, err)
+				LogHookError(dbPath, "emit", "db-insert", err)
+				return nil
 			}
 
 			_ = socket.SendWakeup(socketPath)

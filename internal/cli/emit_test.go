@@ -2,7 +2,9 @@ package cli_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,20 +98,52 @@ func TestEmitDerivesCodexPayload(t *testing.T) {
 	}
 }
 
-func TestEmitWithoutTitleReturnsSilentExit(t *testing.T) {
+func TestEmitWithoutTitleLogsAndExitsZero(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "notifytun.db")
+
 	cmd := cli.NewEmitCmd()
-	cmd.SetArgs(nil)
+	cmd.SetArgs([]string{"--db", dbPath})
 
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error, want nil: %v", err)
 	}
 
-	exitErr, ok := err.(*cli.ExitError)
-	if !ok {
-		t.Fatalf("expected *cli.ExitError, got %T", err)
+	data, err := os.ReadFile(filepath.Join(dir, "notifytun-errors.log"))
+	if err != nil {
+		t.Fatalf("expected error log to exist: %v", err)
 	}
-	if exitErr.Code != 1 || !exitErr.Silent {
-		t.Fatalf("unexpected exit error: %+v", exitErr)
+	if !strings.Contains(string(data), "\temit\tparse: missing notification title") {
+		t.Fatalf("unexpected log contents: %q", string(data))
+	}
+}
+
+func TestEmitDBOpenFailureLogsAndExitsZero(t *testing.T) {
+	dir := t.TempDir()
+	// Make the DB path itself a directory. DB Open's MkdirAll(filepath.Dir(path))
+	// succeeds because dir exists, but opening the SQLite file fails since
+	// dbPath is a directory. The log lives in `dir`, which is writable.
+	dbPath := filepath.Join(dir, "db-is-a-dir")
+	if err := os.Mkdir(dbPath, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	cmd := cli.NewEmitCmd()
+	cmd.SetArgs([]string{
+		"--title", "Test",
+		"--db", dbPath,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error, want nil: %v", err)
+	}
+
+	logPath := filepath.Join(dir, "notifytun-errors.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("expected error log at %s: %v", logPath, err)
+	}
+	if !strings.Contains(string(data), "\temit\tdb-open:") {
+		t.Fatalf("unexpected log contents: %q", string(data))
 	}
 }
