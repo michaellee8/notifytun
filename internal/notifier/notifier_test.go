@@ -12,7 +12,7 @@ import (
 
 func TestMacOSCommandArgs(t *testing.T) {
 	n := notifier.NewMacOS()
-	cmd := n.BuildCommand("Test Title", "Test Body")
+	cmd := n.BuildCommand(context.Background(), "Test Title", "Test Body")
 
 	if cmd.Path == "" {
 		t.Fatal("expected osascript path")
@@ -32,7 +32,7 @@ func TestMacOSCommandArgs(t *testing.T) {
 
 func TestLinuxCommandArgs(t *testing.T) {
 	n := notifier.NewLinux()
-	cmd := n.BuildCommand("Test Title", "Test Body")
+	cmd := n.BuildCommand(context.Background(), "Test Title", "Test Body")
 
 	if len(cmd.Args) == 0 || cmd.Args[0] != "notify-send" {
 		t.Fatalf("expected notify-send command, got %v", cmd.Args)

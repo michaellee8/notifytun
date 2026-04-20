@@ -13,12 +13,14 @@ func NewLinux() *Linux {
 	return &Linux{}
 }
 
-// BuildCommand returns the command used to deliver the notification.
-func (l *Linux) BuildCommand(title, body string) *exec.Cmd {
-	return exec.Command("notify-send", "-a", "notifytun", title, body)
+// BuildCommand returns the command used to deliver the notification. The
+// returned *exec.Cmd is bound to ctx so cancellation propagates to the
+// child process.
+func (l *Linux) BuildCommand(ctx context.Context, title, body string) *exec.Cmd {
+	return exec.CommandContext(ctx, "notify-send", "-a", "notifytun", title, body)
 }
 
 // Notify sends the notification.
 func (l *Linux) Notify(ctx context.Context, n Notification) error {
-	return exec.CommandContext(ctx, "notify-send", "-a", "notifytun", n.Title, n.Body).Run()
+	return l.BuildCommand(ctx, n.Title, n.Body).Run()
 }

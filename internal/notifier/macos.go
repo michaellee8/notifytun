@@ -19,12 +19,14 @@ const appleScript = `on run argv
   display notification theBody with title theTitle subtitle "notifytun"
 end run`
 
-// BuildCommand returns the command used to deliver the notification.
-func (m *MacOS) BuildCommand(title, body string) *exec.Cmd {
-	return exec.Command("osascript", "-e", appleScript, "--", title, body)
+// BuildCommand returns the command used to deliver the notification. The
+// returned *exec.Cmd is bound to ctx so cancellation propagates to the
+// child process.
+func (m *MacOS) BuildCommand(ctx context.Context, title, body string) *exec.Cmd {
+	return exec.CommandContext(ctx, "osascript", "-e", appleScript, "--", title, body)
 }
 
 // Notify sends the notification.
 func (m *MacOS) Notify(ctx context.Context, n Notification) error {
-	return exec.CommandContext(ctx, "osascript", "-e", appleScript, "--", n.Title, n.Body).Run()
+	return m.BuildCommand(ctx, n.Title, n.Body).Run()
 }
