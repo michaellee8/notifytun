@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -239,17 +238,19 @@ func waitForReconnect(ctx context.Context, delay time.Duration) error {
 }
 
 func buildRemoteAttachCommand(remoteBin string) string {
+	var inner string
 	if remoteBin == defaultRemoteBin {
-		script := `if command -v notifytun >/dev/null 2>&1; then exec notifytun attach; ` +
+		inner = `if command -v notifytun >/dev/null 2>&1; then exec notifytun attach; ` +
 			`elif [ -x "$HOME/go/bin/notifytun" ]; then exec "$HOME/go/bin/notifytun" attach; ` +
 			`else echo "notifytun: not found in PATH or ~/go/bin" >&2; exit 127; fi`
-		return "sh -lc " + strconv.Quote(script)
+	} else {
+		inner = shellSingleQuote(remoteBin) + " attach"
 	}
-	return "sh -lc " + strconv.Quote(shellQuote(remoteBin)+" attach")
+	return "sh -lc " + shellSingleQuote(inner)
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func logRemoteStderr(stderr io.Reader) {

@@ -3,11 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -309,11 +309,14 @@ func extractDefaultAttachScript(t *testing.T) string {
 	if quoted == cmd {
 		t.Fatalf("expected sh -lc prefix, got %q", cmd)
 	}
-	script, err := strconv.Unquote(quoted)
+	// The inner string is wrapped in POSIX single quotes. Ask /bin/sh to
+	// unquote it for us via `printf %s` so we exercise the same parser the
+	// remote shell will use.
+	out, err := exec.Command("/bin/sh", "-c", "printf %s "+quoted).CombinedOutput()
 	if err != nil {
-		t.Fatalf("Unquote(%q): %v", quoted, err)
+		t.Fatalf("unquote probe failed: %v (output=%q)", err, out)
 	}
-	return script
+	return string(out)
 }
 
 func TestBuildRemoteAttachCommandFallbackPrefersPath(t *testing.T) {
@@ -636,5 +639,60 @@ func TestHandleNotifLogsDeliveryFailure(t *testing.T) {
 
 	if calls := n.snapshot(); len(calls) != 1 {
 		t.Fatalf("expected notifier to be called once, got %d", len(calls))
+	}
+}
+
+func TestBuildRemoteAttachCommandLiteralizesShellMetacharacters(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "pwned")
+
+	// If shell quoting is broken, $(touch ...) would fire.
+	remoteBin := fmt.Sprintf("/fake/notifytun$(touch %s)", marker)
+	cmd := buildRemoteAttachCommand(remoteBin)
+
+	// Simulate what the remote ssh side does: invoke /bin/sh on the produced string.
+	out, _ := exec.Command("/bin/sh", "-c", cmd).CombinedOutput()
+	_ = out // command will fail (no /fake/notifytun), but we only care whether the injection fired
+
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("shell quoting regression: $(touch) was executed, marker at %s exists", marker)
+	}
+}
+
+func TestBuildRemoteAttachCommandLiteralizesBackticks(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "pwned-backtick")
+
+	remoteBin := "/fake/notifytun`touch " + marker + "`"
+	cmd := buildRemoteAttachCommand(remoteBin)
+
+	_, _ = exec.Command("/bin/sh", "-c", cmd).CombinedOutput()
+
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("backtick quoting regression: marker at %s exists", marker)
+	}
+}
+
+func TestBuildRemoteAttachCommandPreservesEmbeddedSingleQuote(t *testing.T) {
+	// Round-trip: the argument should be parseable back by sh and yield the
+	// original remoteBin string. Use `printf %s` as a probe.
+	remoteBin := "/fake/note's bin/notifytun"
+	cmd := buildRemoteAttachCommand(remoteBin)
+
+	// Transform the outer "sh -lc ARG" back to "printf %s -- ARG" by
+	// swapping the first token, so we can observe how ARG is parsed.
+	after := strings.TrimPrefix(cmd, "sh -lc ")
+	if after == cmd {
+		t.Fatalf("unexpected command shape: %q", cmd)
+	}
+	probe := exec.Command("/bin/sh", "-c", "printf %s "+after)
+	out, err := probe.CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe failed: %v (output=%q)", err, out)
+	}
+	got := string(out)
+	want := "'/fake/note'\"'\"'s bin/notifytun' attach"
+	if got != want {
+		t.Fatalf("round-trip mismatch:\n got  %q\n want %q", got, want)
 	}
 }
