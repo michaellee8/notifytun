@@ -17,11 +17,11 @@ func TestClaudeHookGeneration(t *testing.T) {
 	if !strings.Contains(hook, `"Notification"`) {
 		t.Fatal("expected Notification hook in generated config")
 	}
-	if !strings.Contains(hook, "Task complete") {
-		t.Fatal("expected generated hook to emit Task complete notifications")
+	if !strings.Contains(hook, "notifytun emit-hook --tool claude-code --event Stop") {
+		t.Fatal("expected emit-hook Stop command")
 	}
-	if !strings.Contains(hook, "Needs attention") {
-		t.Fatal("expected generated hook to emit Claude attention notifications")
+	if !strings.Contains(hook, "notifytun emit-hook --tool claude-code --event Notification") {
+		t.Fatal("expected emit-hook Notification command")
 	}
 }
 
@@ -32,7 +32,6 @@ func TestClaudeHookIdempotent(t *testing.T) {
 	if err := setup.ApplyClaudeHook(settingsPath); err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
-
 	first, err := os.ReadFile(settingsPath)
 	if err != nil {
 		t.Fatalf("ReadFile(first): %v", err)
@@ -41,7 +40,6 @@ func TestClaudeHookIdempotent(t *testing.T) {
 	if err := setup.ApplyClaudeHook(settingsPath); err != nil {
 		t.Fatalf("second apply: %v", err)
 	}
-
 	second, err := os.ReadFile(settingsPath)
 	if err != nil {
 		t.Fatalf("ReadFile(second): %v", err)
@@ -62,7 +60,7 @@ func TestDetectAlreadyConfigured(t *testing.T) {
         "hooks": [
           {
             "type": "command",
-            "command": "notifytun emit --tool claude-code --title 'Task complete'"
+            "command": "notifytun emit-hook --tool claude-code --event Stop"
           }
         ]
       }
@@ -73,7 +71,7 @@ func TestDetectAlreadyConfigured(t *testing.T) {
         "hooks": [
           {
             "type": "command",
-            "command": "notifytun emit --tool claude-code --title 'Needs attention'"
+            "command": "notifytun emit-hook --tool claude-code --event Notification"
           }
         ]
       }
@@ -121,7 +119,71 @@ func TestApplyClaudeHookPreservesExistingStopHooks(t *testing.T) {
 	if !strings.Contains(content, "echo existing") {
 		t.Fatal("expected existing Stop hook to be preserved")
 	}
-	if strings.Count(content, "notifytun emit --tool claude-code --title 'Task complete'") != 1 {
+	if strings.Count(content, "notifytun emit-hook --tool claude-code --event Stop") != 1 {
 		t.Fatal("expected exactly one notifytun Stop hook after apply")
+	}
+}
+
+func TestApplyClaudeHookMigratesLegacyEmitEntries(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit --tool claude-code --title 'Task complete'"
+          }
+        ]
+      },
+      {
+        "matcher": "preserve",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo keep-me"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit --tool claude-code --title 'Needs attention'"
+          }
+        ]
+      }
+    ]
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := setup.ApplyClaudeHook(settingsPath); err != nil {
+		t.Fatalf("ApplyClaudeHook: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "'Task complete'") || strings.Contains(content, "'Needs attention'") {
+		t.Fatalf("expected legacy notifytun emit entries to be removed, got %q", content)
+	}
+	if !strings.Contains(content, "echo keep-me") {
+		t.Fatal("expected unrelated hook to be preserved")
+	}
+	if strings.Count(content, "notifytun emit-hook --tool claude-code --event Stop") != 1 {
+		t.Fatalf("expected exactly one emit-hook Stop entry, got %q", content)
+	}
+	if strings.Count(content, "notifytun emit-hook --tool claude-code --event Notification") != 1 {
+		t.Fatalf("expected exactly one emit-hook Notification entry, got %q", content)
 	}
 }

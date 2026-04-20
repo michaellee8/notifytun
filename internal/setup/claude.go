@@ -8,9 +8,11 @@ import (
 )
 
 const (
-	claudeStopCommand         = "notifytun emit --tool claude-code --title 'Task complete'"
-	claudeNotificationCommand = "notifytun emit --tool claude-code --title 'Needs attention'"
+	claudeStopCommand         = "notifytun emit-hook --tool claude-code --event Stop"
+	claudeNotificationCommand = "notifytun emit-hook --tool claude-code --event Notification"
 )
+
+var claudeStripPrefixes = []string{"notifytun emit ", "notifytun emit-hook "}
 
 // ClaudeConfigurator manages ~/.claude/settings.json hooks.
 type ClaudeConfigurator struct{}
@@ -30,9 +32,16 @@ func (c *ClaudeConfigurator) Apply(home string) error {
 	return ApplyClaudeHook(c.ConfigPath(home))
 }
 
+func claudeHookEvents() []JSONHookEvent {
+	return []JSONHookEvent{
+		{Event: "Stop", Command: claudeStopCommand},
+		{Event: "Notification", Command: claudeNotificationCommand},
+	}
+}
+
 // IsClaudeConfigured reports whether both notifytun Claude hooks are already present.
 func IsClaudeConfigured(settingsPath string) bool {
-	return JSONHooksConfigured(settingsPath, claudeLegacyHookEvents())
+	return JSONHooksConfigured(settingsPath, claudeHookEvents())
 }
 
 // ApplyClaudeHook merges notifytun Claude hooks into the given settings file.
@@ -40,14 +49,7 @@ func ApplyClaudeHook(settingsPath string) error {
 	if IsClaudeConfigured(settingsPath) {
 		return nil
 	}
-	return ApplyJSONHooks(settingsPath, claudeLegacyHookEvents(), nil)
-}
-
-func claudeLegacyHookEvents() []JSONHookEvent {
-	return []JSONHookEvent{
-		{Event: "Stop", Command: claudeStopCommand},
-		{Event: "Notification", Command: claudeNotificationCommand},
-	}
+	return ApplyJSONHooks(settingsPath, claudeHookEvents(), claudeStripPrefixes)
 }
 
 // GenerateClaudeHook returns the JSON snippet notifytun writes into Claude settings.
@@ -61,7 +63,7 @@ func GenerateClaudeHook() string {
         "hooks": [
           {
             "type": "command",
-            "command": "notifytun emit --tool claude-code --title 'Task complete'"
+            "command": "notifytun emit-hook --tool claude-code --event Stop"
           }
         ]
       }
@@ -72,7 +74,7 @@ func GenerateClaudeHook() string {
         "hooks": [
           {
             "type": "command",
-            "command": "notifytun emit --tool claude-code --title 'Needs attention'"
+            "command": "notifytun emit-hook --tool claude-code --event Notification"
           }
         ]
       }

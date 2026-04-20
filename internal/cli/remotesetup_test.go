@@ -82,8 +82,11 @@ func TestRemoteSetupApplyConfiguresSupportedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(claude): %v", err)
 	}
-	if !strings.Contains(string(claudeSettings), "notifytun emit --tool claude-code --title 'Task complete'") {
-		t.Fatalf("expected Claude settings to contain notifytun hook, got %q", string(claudeSettings))
+	if !strings.Contains(string(claudeSettings), "notifytun emit-hook --tool claude-code --event Stop") {
+		t.Fatalf("expected Claude settings to contain notifytun Stop hook, got %q", string(claudeSettings))
+	}
+	if !strings.Contains(string(claudeSettings), "notifytun emit-hook --tool claude-code --event Notification") {
+		t.Fatalf("expected Claude settings to contain notifytun Notification hook, got %q", string(claudeSettings))
 	}
 
 	codexConfig, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
@@ -111,7 +114,7 @@ func TestRemoteSetupNothingToConfigureWhenAlreadySetUp(t *testing.T) {
         "hooks": [
           {
             "type": "command",
-            "command": "notifytun emit --tool claude-code --title 'Task complete'"
+            "command": "notifytun emit-hook --tool claude-code --event Stop"
           }
         ]
       }
@@ -122,7 +125,7 @@ func TestRemoteSetupNothingToConfigureWhenAlreadySetUp(t *testing.T) {
         "hooks": [
           {
             "type": "command",
-            "command": "notifytun emit --tool claude-code --title 'Needs attention'"
+            "command": "notifytun emit-hook --tool claude-code --event Notification"
           }
         ]
       }
