@@ -148,12 +148,12 @@ Internal remote streaming command. `notifytun local` starts this over SSH. It re
 
 ### `notifytun emit`
 
-Writes a notification to the remote SQLite queue and best-effort wakes the remote socket listener.
+Writes a notification to the remote SQLite queue and best-effort wakes the remote socket listener. Intended for manual or ad-hoc invocations from scripts; agent hooks installed by `notifytun remote-setup` use `notifytun emit-hook` instead (see below).
 
 Example:
 
 ```bash
-notifytun emit --tool claude-code --title "Task complete" --body "Finished refactor"
+notifytun emit --tool cron --title "Backup finished" --body "Nightly job exited cleanly"
 ```
 
 It also accepts one trailing Codex `notify` JSON payload and can derive a title/body automatically when the payload type is `agent-turn-complete`.
