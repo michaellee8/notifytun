@@ -150,6 +150,38 @@ func TestEmitTruncatesLongBodyTo180Runes(t *testing.T) {
 	}
 }
 
+func TestEmitTruncatesLongCodexPayloadBodyTo180Runes(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "notifytun.db")
+
+	long := strings.Repeat("x", 500)
+	cmd := cli.NewEmitCmd()
+	cmd.SetArgs([]string{
+		"--tool", "codex",
+		"--db", dbPath,
+		`{"type":"agent-turn-complete","last-assistant-message":"` + long + `"}`,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	rows, err := d.QueryUndelivered()
+	if err != nil {
+		t.Fatalf("QueryUndelivered: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows=%d", len(rows))
+	}
+	if n := len([]rune(rows[0].Body)); n != 180 {
+		t.Fatalf("body rune count = %d, want 180", n)
+	}
+}
+
 func TestEmitDBOpenFailureLogsAndExitsZero(t *testing.T) {
 	dir := t.TempDir()
 	// Make the DB path itself a directory. DB Open's MkdirAll(filepath.Dir(path))
