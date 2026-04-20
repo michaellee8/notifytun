@@ -55,6 +55,8 @@ func NewEmitCmd() *cobra.Command {
 				return nil
 			}
 
+			body = truncateRunes(body, 180)
+
 			d, err := db.Open(dbPath)
 			if err != nil {
 				LogHookError(dbPath, "emit", "db-open", err)
