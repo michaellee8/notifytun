@@ -235,7 +235,7 @@ When Codex passes its JSON notify payload, `notifytun emit-hook` will derive a c
 
 ### OpenCode
 
-`remote-setup` installs a plugin at `~/.config/opencode/plugins/notifytun.js` that reads the last assistant message via the OpenCode SDK and calls `notifytun emit-hook --tool opencode --event turn-complete`.
+`remote-setup` installs a plugin at `~/.config/opencode/plugins/notifytun.js` that reads the last assistant message via the OpenCode SDK and calls `notifytun emit-hook --tool opencode --event session.idle`.
 
 ## Troubleshooting
 

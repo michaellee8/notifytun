@@ -626,12 +626,24 @@ Use `AfterAgent` and `Notification` hooks in `~/.gemini/settings.json`.
   "hooks": {
     "AfterAgent": [
       {
-        "command": "notifytun emit-hook --tool gemini --event AfterAgent"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit-hook --tool gemini --event AfterAgent"
+          }
+        ]
       }
     ],
     "Notification": [
       {
-        "command": "notifytun emit-hook --tool gemini --event Notification"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit-hook --tool gemini --event Notification"
+          }
+        ]
       }
     ]
   }
@@ -650,23 +662,34 @@ Uses a plugin file at `~/.config/opencode/plugins/notifytun.js`.
 
 ### Example plugin (installed by `remote-setup`)
 
-```js
-// notifytun.js — installed by notifytun remote-setup
-import { subscribe } from "@opencode-ai/sdk";
-import { execFileSync } from "child_process";
-
-subscribe("turn-complete", (event) => {
-  const body = event?.lastAssistantMessage ?? "";
-  execFileSync("notifytun", [
-    "emit-hook", "--tool", "opencode", "--event", "turn-complete",
-    "--body", body,
-  ], { stdio: "ignore" });
-});
+```javascript
+// Managed by `notifytun remote-setup`. Edits will be overwritten.
+export const NotifytunPlugin = async ({ client, $ }) => {
+  return {
+    event: async ({ event }) => {
+      if (event.type !== "session.idle") return;
+      let body = "";
+      try {
+        const sessionID =
+          event.properties?.sessionID ?? event.properties?.session_id;
+        if (sessionID) {
+          const msgs = await client.session.messages({ path: { id: sessionID } });
+          const last = Array.isArray(msgs) ? msgs[msgs.length - 1] : null;
+          body = extractText(last);
+        }
+      } catch (_) {}
+      const payload = JSON.stringify({ body });
+      try {
+        await $`echo ${payload} | notifytun emit-hook --tool opencode --event session.idle`;
+      } catch (_) {}
+    },
+  };
+};
 ```
 
 ### Notes
 
-* The plugin reads the last assistant message via the OpenCode SDK.
+* The plugin reads the last assistant message via the OpenCode SDK (`client.session.messages`) and pipes a JSON payload to `notifytun emit-hook`.
 * `notifytun emit-hook` always exits 0; any error is appended to `~/.notifytun/notifytun-errors.log`.
 
 ## 18. Local notifier backends
