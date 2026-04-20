@@ -56,4 +56,3 @@ func lookPath(binary, pathEnv string) string {
 
 	return ""
 }
-
