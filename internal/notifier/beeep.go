@@ -12,13 +12,18 @@ var beeepNotify = beeep.Notify
 
 type Beeep struct{}
 
+func init() {
+	beeep.AppName = beeepAppName
+}
+
 func NewBeeep() *Beeep {
 	return &Beeep{}
 }
 
 func (b *Beeep) Notify(ctx context.Context, n Notification) error {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-	beeep.AppName = beeepAppName
 	return beeepNotify(n.Title, n.Body, "")
 }

@@ -67,3 +67,29 @@ func TestBeeepNotifyReturnsUnderlyingError(t *testing.T) {
 		t.Fatalf("expected errors.Is(err, wantErr), got %v", err)
 	}
 }
+
+func TestBeeepNotifyCanceledContextSkipsNotify(t *testing.T) {
+	originalNotify := beeepNotify
+	originalAppName := beeep.AppName
+	t.Cleanup(func() {
+		beeepNotify = originalNotify
+		beeep.AppName = originalAppName
+	})
+
+	called := false
+	beeepNotify = func(title, body string, icon any) error {
+		called = true
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := NewBeeep().Notify(ctx, Notification{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected errors.Is(err, context.Canceled), got %v", err)
+	}
+	if called {
+		t.Fatal("expected beeepNotify not to be called")
+	}
+}
