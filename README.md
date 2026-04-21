@@ -53,7 +53,7 @@ If the SSH session drops, notifications continue queueing remotely. When the con
 
 - Go `1.25.5` or newer to build from source
 - A remote Linux host reachable over SSH
-- A local machine with a desktop notification environment supported by `beeep` (macOS, Linux, or Windows), or a custom notification command via `--backend generic --notify-cmd ...`
+- A local machine with a desktop notification environment supported by `beeep` (macOS, Linux, or Windows), or a Unix-like local setup where `--backend generic --notify-cmd ...` can run via `sh -lc`
 - An SSH trust relationship already established in `~/.ssh/known_hosts`
 
 ## Build and install
@@ -135,7 +135,7 @@ Supported keys:
 - `local.target`: SSH target for `notifytun local`
 - `local.remote-bin`: remote binary path or command name
 - `local.backend`: `auto` or `generic`
-- `local.notify-cmd`: command used by the `generic` backend
+- `local.notify-cmd`: command used by the `generic` backend, invoked via `sh -lc`
 
 Remote defaults:
 
@@ -159,7 +159,7 @@ Common flags:
 - `--target`: required unless set in config
 - `--remote-bin`: remote `notifytun` path or command name
 - `--backend`: `auto`, `generic`
-- `--notify-cmd`: required for `generic`
+- `--notify-cmd`: required for `generic` and invoked via `sh -lc`
 - `--config`: explicit config file path
 
 ### `notifytun attach`
@@ -306,7 +306,7 @@ Try:
 notifytun test-notify --backend auto
 ```
 
-If native delivery still fails on your machine, switch to `--backend generic --notify-cmd ...`.
+If native delivery still fails on your machine and you have a Unix-like shell environment available locally, switch to `--backend generic --notify-cmd ...`.
 
 ### `--notify-cmd` is required
 

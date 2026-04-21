@@ -8,8 +8,8 @@
 
 > **Note:** The `remote-setup` scope in this document is superseded for the
 > hook-configuration portion by `docs/superpowers/specs/2026-04-20-remote-setup-all-agents-design.md`.
-> Everything else in this document (SSH transport, SQLite protocol, notifier
-> backends, etc.) still applies.
+> The SSH transport, SQLite protocol, and other non-`remote-setup`,
+> non-local-notifier sections still apply.
 
 > **Note (2026-04-21):** The local notifier backend design in this document has been superseded by [2026-04-21-beeep-notifier-design.md](2026-04-21-beeep-notifier-design.md).
 
