@@ -73,7 +73,7 @@ func NewTestNotifyCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&backend, "backend", "auto", "Notifier backend: auto, macos, linux, generic")
+	cmd.Flags().StringVar(&backend, "backend", "auto", "Notifier backend: auto, generic")
 	cmd.Flags().StringVar(&notifyCmd, "notify-cmd", "", "Custom command for generic backend")
 
 	return cmd

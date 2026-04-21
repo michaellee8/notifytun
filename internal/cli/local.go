@@ -94,7 +94,7 @@ func NewLocalCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.target, "target", "", "SSH target (user@host or SSH config alias)")
 	cmd.Flags().StringVar(&opts.remoteBin, "remote-bin", opts.remoteBin, "Path to notifytun on remote")
-	cmd.Flags().StringVar(&opts.backend, "backend", opts.backend, "Notifier backend: auto, macos, linux, generic")
+	cmd.Flags().StringVar(&opts.backend, "backend", opts.backend, "Notifier backend: auto, generic")
 	cmd.Flags().StringVar(&opts.notifyCmd, "notify-cmd", "", "Custom command for generic backend")
 	cmd.Flags().StringVar(&opts.configFile, "config", "", "Config file path")
 

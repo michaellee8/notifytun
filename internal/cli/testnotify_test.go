@@ -8,6 +8,30 @@ import (
 	"github.com/michaellee8/notifytun/internal/cli"
 )
 
+func TestTestNotifyHelpListsSupportedBackends(t *testing.T) {
+	cmd := cli.NewTestNotifyCmd()
+
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got := output.String()
+	if !strings.Contains(got, "Notifier backend: auto, generic") {
+		t.Fatalf("expected help to list supported backends, got %q", got)
+	}
+	if strings.Contains(got, "macos") {
+		t.Fatalf("expected help to omit removed macos backend, got %q", got)
+	}
+	if strings.Contains(got, "linux") {
+		t.Fatalf("expected help to omit removed linux backend, got %q", got)
+	}
+}
+
 func TestTestNotifyPrintsActualGenericCommandOutputAndSuccess(t *testing.T) {
 	cmd := cli.NewTestNotifyCmd()
 

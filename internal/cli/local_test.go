@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -131,6 +132,30 @@ func waitForBlockingCalls(t *testing.T, n *blockingNotifier, want int, timeout t
 	}
 }
 
+func TestLocalCmdHelpListsSupportedBackends(t *testing.T) {
+	cmd := NewLocalCmd()
+
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got := output.String()
+	if !strings.Contains(got, "Notifier backend: auto, generic") {
+		t.Fatalf("expected help to list supported backends, got %q", got)
+	}
+	if strings.Contains(got, "macos") {
+		t.Fatalf("expected help to omit removed macos backend, got %q", got)
+	}
+	if strings.Contains(got, "linux") {
+		t.Fatalf("expected help to omit removed linux backend, got %q", got)
+	}
+}
+
 func TestLocalOptionsApplyConfigFallbacks(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.toml")
 	content := `
@@ -184,7 +209,7 @@ notify-cmd = "cat"
 	opts := localOptions{
 		target:       "flag@example.com",
 		remoteBin:    "notifytun-custom",
-		backend:      "linux",
+		backend:      "generic",
 		notifyCmd:    "printf hi",
 		configFile:   configPath,
 		targetSet:    true,
@@ -203,7 +228,7 @@ notify-cmd = "cat"
 	if opts.remoteBin != "notifytun-custom" {
 		t.Fatalf("expected explicit remote bin to win, got %q", opts.remoteBin)
 	}
-	if opts.backend != "linux" {
+	if opts.backend != "generic" {
 		t.Fatalf("expected explicit backend to win, got %q", opts.backend)
 	}
 	if opts.notifyCmd != "printf hi" {
