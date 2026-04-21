@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os/exec"
-	"runtime"
 )
 
 // Notification is the payload delivered to the local notification backend.
@@ -30,11 +28,7 @@ type CommandOutputConfigurer interface {
 func New(backend, notifyCmd string) (Notifier, error) {
 	switch backend {
 	case "auto":
-		return newAuto(notifyCmd)
-	case "macos":
-		return NewMacOS(), nil
-	case "linux":
-		return NewLinux(), nil
+		return NewBeeep(), nil
 	case "generic":
 		if notifyCmd == "" {
 			return nil, fmt.Errorf("--notify-cmd is required for generic backend")
@@ -42,25 +36,5 @@ func New(backend, notifyCmd string) (Notifier, error) {
 		return NewGeneric(notifyCmd)
 	default:
 		return nil, fmt.Errorf("unknown backend: %s", backend)
-	}
-}
-
-func newAuto(notifyCmd string) (Notifier, error) {
-	switch runtime.GOOS {
-	case "darwin":
-		return NewMacOS(), nil
-	case "linux":
-		if _, err := exec.LookPath("notify-send"); err == nil {
-			return NewLinux(), nil
-		}
-		if notifyCmd == "" {
-			return nil, fmt.Errorf("--notify-cmd is required when notify-send is unavailable")
-		}
-		return NewGeneric(notifyCmd)
-	default:
-		if notifyCmd == "" {
-			return nil, fmt.Errorf("auto backend is unsupported on %s without --notify-cmd", runtime.GOOS)
-		}
-		return NewGeneric(notifyCmd)
 	}
 }
