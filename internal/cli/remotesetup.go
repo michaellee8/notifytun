@@ -17,7 +17,7 @@ func NewRemoteSetupCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:           "remote-setup",
-		Short:         "Detect AI tools and configure their hooks to call notifytun emit",
+		Short:         "Detect AI tools and configure their hooks to call notifytun emit-hook",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,

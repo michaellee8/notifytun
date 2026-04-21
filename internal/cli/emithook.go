@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,9 @@ import (
 type hookDispatch struct {
 	toolDisplayName string
 	titleSuffix     string
+	// shouldRecord may suppress a notification entirely. Returning an error
+	// does not block delivery; the caller logs it and proceeds.
+	shouldRecord func(map[string]any) (bool, error)
 	// extractBody receives the unmarshaled payload and returns the body string.
 	// Returning "" means "no body" — title-only notification. Not an error.
 	extractBody func(map[string]any) string
@@ -47,6 +51,12 @@ var hookTable = map[string]map[string]hookDispatch{
 		},
 	},
 	"codex": {
+		"Stop": {
+			toolDisplayName: "Codex",
+			titleSuffix:     "Task complete",
+			shouldRecord:    shouldRecordCodexStop,
+			extractBody:     extractStringField("last_assistant_message"),
+		},
 		"notify": {
 			toolDisplayName: "Codex",
 			titleSuffix:     "Task complete",
@@ -90,6 +100,77 @@ func extractCodexBody(payload map[string]any) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func shouldRecordCodexStop(payload map[string]any) (bool, error) {
+	if payload == nil {
+		return true, nil
+	}
+	transcriptPath, _ := payload["transcript_path"].(string)
+	transcriptPath = strings.TrimSpace(transcriptPath)
+	if transcriptPath == "" {
+		return true, nil
+	}
+	isSubagent, err := transcriptShowsCodexSubagentSpawn(transcriptPath)
+	if err != nil {
+		return true, fmt.Errorf("classify Codex transcript %q: %w", transcriptPath, err)
+	}
+	return !isSubagent, nil
+}
+
+type codexTranscriptLine struct {
+	Type    string                   `json:"type"`
+	Payload codexTranscriptLineInner `json:"payload"`
+}
+
+type codexTranscriptLineInner struct {
+	Source json.RawMessage `json:"source"`
+}
+
+type codexTranscriptSubagentSource struct {
+	Subagent *struct {
+		ThreadSpawn *struct {
+			ParentThreadID string `json:"parent_thread_id"`
+		} `json:"thread_spawn"`
+	} `json:"subagent"`
+}
+
+func transcriptShowsCodexSubagentSpawn(transcriptPath string) (bool, error) {
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	line, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil && err != io.EOF {
+		return false, err
+	}
+	line = trimASCIIWhitespace(line)
+	if len(line) == 0 {
+		return false, fmt.Errorf("empty transcript")
+	}
+
+	var first codexTranscriptLine
+	if err := json.Unmarshal(line, &first); err != nil {
+		return false, err
+	}
+	if first.Type != "session_meta" {
+		return false, fmt.Errorf("first transcript line is %q, want session_meta", first.Type)
+	}
+	source := strings.TrimSpace(string(first.Payload.Source))
+	if source == "" || source == "null" {
+		return false, nil
+	}
+	if strings.HasPrefix(source, `"`) {
+		return false, nil
+	}
+
+	var parsed codexTranscriptSubagentSource
+	if err := json.Unmarshal(first.Payload.Source, &parsed); err != nil {
+		return false, err
+	}
+	return parsed.Subagent != nil && parsed.Subagent.ThreadSpawn != nil, nil
 }
 
 // NewEmitHookCmd records a notification derived from an agent hook payload.
@@ -136,6 +217,16 @@ func NewEmitHookCmd() *cobra.Command {
 				if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 					LogHookError(dbPath, "emit-hook", "parse", err)
 					payload = nil
+				}
+			}
+
+			if dispatch.shouldRecord != nil {
+				shouldRecord, err := dispatch.shouldRecord(payload)
+				if err != nil {
+					LogHookError(dbPath, "emit-hook", "parse", err)
+				}
+				if !shouldRecord {
+					return nil
 				}
 			}
 
@@ -196,4 +287,25 @@ func truncateRunes(s string, max int) string {
 		return s
 	}
 	return string(runes[:max])
+}
+
+func trimASCIIWhitespace(b []byte) []byte {
+	start := 0
+	for start < len(b) && isASCIIWhitespace(b[start]) {
+		start++
+	}
+	end := len(b)
+	for end > start && isASCIIWhitespace(b[end-1]) {
+		end--
+	}
+	return b[start:end]
+}
+
+func isASCIIWhitespace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r':
+		return true
+	default:
+		return false
+	}
 }

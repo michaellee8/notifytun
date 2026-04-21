@@ -10,63 +10,77 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
-func TestCodexNotifyGeneration(t *testing.T) {
-	cfg := setup.GenerateCodexNotifyConfig()
-	if !strings.Contains(cfg, `notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]`) {
-		t.Fatal("expected codex notify config to call notifytun emit-hook")
+func TestCodexHookGeneration(t *testing.T) {
+	hooks := setup.GenerateCodexHookConfig()
+	if !strings.Contains(hooks, `"Stop"`) {
+		t.Fatalf("expected Codex hooks to define Stop, got %q", hooks)
+	}
+	if !strings.Contains(hooks, `notifytun emit-hook --tool codex --event Stop`) {
+		t.Fatalf("expected Codex hooks to call emit-hook Stop, got %q", hooks)
 	}
 }
 
-func TestCodexNotifyIdempotent(t *testing.T) {
+func TestCodexConfigGenerationEnablesHooks(t *testing.T) {
+	cfg := setup.GenerateCodexConfig()
+	if !strings.Contains(cfg, "[features]") {
+		t.Fatalf("expected features table, got %q", cfg)
+	}
+	if !strings.Contains(cfg, `codex_hooks = true`) {
+		t.Fatalf("expected codex_hooks enabled, got %q", cfg)
+	}
+	if strings.Contains(cfg, "notify =") {
+		t.Fatalf("did not expect root notify config, got %q", cfg)
+	}
+}
+
+func TestApplyCodexConfigIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
+	hooksPath := filepath.Join(dir, "hooks.json")
 
-	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
+	if err := setup.ApplyCodexConfig(configPath, hooksPath); err != nil {
 		t.Fatalf("first apply: %v", err)
 	}
 	first, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("ReadFile(first): %v", err)
 	}
+	firstHooks, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("ReadFile(first hooks): %v", err)
+	}
 
-	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
+	if err := setup.ApplyCodexConfig(configPath, hooksPath); err != nil {
 		t.Fatalf("second apply: %v", err)
 	}
 	second, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("ReadFile(second): %v", err)
 	}
+	secondHooks, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("ReadFile(second hooks): %v", err)
+	}
 	if string(first) != string(second) {
 		t.Fatal("second codex apply changed the file")
 	}
-}
-
-func TestIsCodexConfiguredIgnoresTableScopedNotify(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(configPath, []byte(`[profiles.default]
-notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]
-model = "gpt-5"
-`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	if setup.IsCodexConfigured(configPath) {
-		t.Fatal("expected table-scoped notify to not count as configured")
+	if string(firstHooks) != string(secondHooks) {
+		t.Fatal("second codex apply changed the hooks file")
 	}
 }
 
-func TestApplyCodexNotifyConfigInsertsRootNotifyBeforeFirstTable(t *testing.T) {
+func TestApplyCodexConfigEnablesHooksAndPreservesTables(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
+	hooksPath := filepath.Join(dir, "hooks.json")
 	if err := os.WriteFile(configPath, []byte(`[profiles.default]
 model = "gpt-5"
 `), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
-		t.Fatalf("ApplyCodexNotifyConfig: %v", err)
+	if err := setup.ApplyCodexConfig(configPath, hooksPath); err != nil {
+		t.Fatalf("ApplyCodexConfig: %v", err)
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -74,17 +88,28 @@ model = "gpt-5"
 		t.Fatalf("ReadFile: %v", err)
 	}
 	cfg := decodeTOML(t, data)
-	if got := rootNotifyValue(t, cfg); !equalStrings(got, []string{"notifytun", "emit-hook", "--tool", "codex", "--event", "notify"}) {
-		t.Fatalf("expected root notify command, got %#v", got)
+	features, ok := cfg["features"].(map[string]any)
+	if !ok || features == nil {
+		t.Fatalf("expected features table, got %#v", cfg["features"])
+	}
+	if got, ok := features["codex_hooks"].(bool); !ok || !got {
+		t.Fatalf("expected codex_hooks=true, got %#v", features["codex_hooks"])
+	}
+	if _, ok := cfg["notify"]; ok {
+		t.Fatalf("did not expect root notify after apply, got %#v", cfg["notify"])
 	}
 	if profiles, ok := cfg["profiles"].(map[string]any); !ok || profiles == nil {
 		t.Fatalf("expected profiles table to remain, got %#v", cfg["profiles"])
 	}
+	if !setup.IsCodexHookConfigured(hooksPath) {
+		t.Fatalf("expected hooks file to be structurally configured")
+	}
 }
 
-func TestApplyCodexNotifyConfigReplacesExistingRootNotify(t *testing.T) {
+func TestApplyCodexConfigReplacesExistingRootNotify(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
+	hooksPath := filepath.Join(dir, "hooks.json")
 	if err := os.WriteFile(configPath, []byte(`notify = ["other", "command"]
 
 [profiles.default]
@@ -93,71 +118,62 @@ model = "gpt-5"
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
-		t.Fatalf("ApplyCodexNotifyConfig: %v", err)
+	if err := setup.ApplyCodexConfig(configPath, hooksPath); err != nil {
+		t.Fatalf("ApplyCodexConfig: %v", err)
 	}
-
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
+	if strings.Contains(string(data), `"other"`) {
+		t.Fatalf("expected old notify to be removed, got %q", string(data))
+	}
 	cfg := decodeTOML(t, data)
-	if got := rootNotifyValue(t, cfg); !equalStrings(got, []string{"notifytun", "emit-hook", "--tool", "codex", "--event", "notify"}) {
-		t.Fatalf("expected root notify command, got %#v", got)
+	features, ok := cfg["features"].(map[string]any)
+	if !ok || features == nil {
+		t.Fatalf("expected features table, got %#v", cfg["features"])
+	}
+	if got, ok := features["codex_hooks"].(bool); !ok || !got {
+		t.Fatalf("expected codex_hooks=true, got %#v", features["codex_hooks"])
+	}
+	if _, ok := cfg["notify"]; ok {
+		t.Fatalf("did not expect root notify after apply, got %#v", cfg["notify"])
 	}
 }
 
-func TestIsCodexConfiguredAcceptsMultilineRootNotify(t *testing.T) {
+func TestIsCodexConfiguredRequiresHooksAndFeature(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(configPath, []byte(`notify = [
-  "notifytun",
-  "emit-hook",
-  "--tool",
-  "codex",
-  "--event",
-  "notify",
-]
-
-[profiles.default]
-model = "gpt-5"
-`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	home := filepath.Join(dir, "home")
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	hooksPath := filepath.Join(home, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(setup.GenerateCodexConfig()), 0o644); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	if err := os.WriteFile(hooksPath, []byte(setup.GenerateCodexHookConfig()), 0o644); err != nil {
+		t.Fatalf("WriteFile(hooks): %v", err)
 	}
 
-	if !setup.IsCodexConfigured(configPath) {
-		t.Fatal("expected multiline root notify to count as configured")
+	if !setup.IsCodexConfigured(home) {
+		t.Fatal("expected Codex hooks integration to count as configured")
 	}
 }
 
-func TestApplyCodexNotifyConfigReplacesMultilineRootNotify(t *testing.T) {
+func TestIsCodexConfiguredRejectsLegacyNotifyOnly(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(configPath, []byte(`notify = [
-  "old",
-  "command",
-]
-
-[profiles.default]
-model = "gpt-5"
-`), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	home := filepath.Join(dir, "home")
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
 	}
 
-	if err := setup.ApplyCodexNotifyConfig(configPath); err != nil {
-		t.Fatalf("ApplyCodexNotifyConfig: %v", err)
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if strings.Contains(string(data), `"old"`) {
-		t.Fatalf("expected old multiline notify to be removed, got %q", string(data))
-	}
-	cfg := decodeTOML(t, data)
-	if got := rootNotifyValue(t, cfg); !equalStrings(got, []string{"notifytun", "emit-hook", "--tool", "codex", "--event", "notify"}) {
-		t.Fatalf("expected root notify command, got %#v", got)
+	if setup.IsCodexConfigured(home) {
+		t.Fatal("expected legacy notify-only config to not count as configured")
 	}
 }
 
@@ -169,28 +185,6 @@ func decodeTOML(t *testing.T, data []byte) map[string]any {
 		t.Fatalf("toml.Unmarshal: %v\ncontent:\n%s", err, string(data))
 	}
 	return cfg
-}
-
-func rootNotifyValue(t *testing.T, cfg map[string]any) []string {
-	t.Helper()
-
-	raw, ok := cfg["notify"]
-	if !ok {
-		t.Fatal("expected root notify key")
-	}
-	values, ok := raw.([]any)
-	if !ok {
-		t.Fatalf("expected root notify array, got %#v", raw)
-	}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		s, ok := value.(string)
-		if !ok {
-			t.Fatalf("expected notify string element, got %#v", value)
-		}
-		out = append(out, s)
-	}
-	return out
 }
 
 func equalStrings(a, b []string) bool {

@@ -105,6 +105,56 @@ func TestEmitHookCodexNotifyFallbackToInputMessages(t *testing.T) {
 	}
 }
 
+func TestEmitHookCodexStopMainThread(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "notifytun.db")
+	transcriptPath := filepath.Join(dir, "main.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(`{"type":"session_meta","payload":{"source":"exec"}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(transcript): %v", err)
+	}
+
+	runEmitHook(t, dbPath,
+		`{"transcript_path":"`+transcriptPath+`","last_assistant_message":"Main done","hook_event_name":"Stop"}`,
+		"--tool", "codex", "--event", "Stop")
+
+	row := readSingleRow(t, dbPath)
+	if row.Title != "Codex: Task complete" {
+		t.Fatalf("title: %q", row.Title)
+	}
+	if row.Body != "Main done" {
+		t.Fatalf("body: %q", row.Body)
+	}
+	if row.Tool != "codex" {
+		t.Fatalf("tool: %q", row.Tool)
+	}
+}
+
+func TestEmitHookCodexStopSuppressesSubagentThread(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "notifytun.db")
+	transcriptPath := filepath.Join(dir, "subagent.jsonl")
+	if err := os.WriteFile(transcriptPath, []byte(`{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-thread","depth":1}}}}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(transcript): %v", err)
+	}
+
+	runEmitHook(t, dbPath,
+		`{"transcript_path":"`+transcriptPath+`","last_assistant_message":"Subagent done","hook_event_name":"Stop"}`,
+		"--tool", "codex", "--event", "Stop")
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	rows, err := d.QueryUndelivered()
+	if err != nil {
+		t.Fatalf("QueryUndelivered: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected no rows for subagent Stop, got %d", len(rows))
+	}
+}
+
 func TestEmitHookGeminiAfterAgent(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "notifytun.db")

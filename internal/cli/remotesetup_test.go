@@ -30,7 +30,7 @@ func TestRemoteSetupDryRunPrintsPreview(t *testing.T) {
 	for _, want := range []string{
 		"Detected tools:\n",
 		"Claude Code -- will add Stop + Notification hooks to ~/.claude/settings.json",
-		"Codex CLI -- will set notify in ~/.codex/config.toml",
+		"Codex CLI -- will enable codex_hooks in ~/.codex/config.toml and add Stop hook to ~/.codex/hooks.json",
 		"Gemini CLI -- will add AfterAgent + Notification hooks to ~/.gemini/settings.json",
 		"OpenCode -- will write ~/.config/opencode/plugins/notifytun.js",
 	} {
@@ -86,7 +86,7 @@ func TestRemoteSetupApplyConfiguresAllFourTools(t *testing.T) {
 		}
 	}
 
-	if !setup.IsCodexConfigured(filepath.Join(home, ".codex", "config.toml")) {
+	if !setup.IsCodexConfigured(home) {
 		t.Fatal("expected Codex config to be structurally configured")
 	}
 
@@ -153,7 +153,10 @@ func TestRemoteSetupNothingToConfigureWhenAlreadySetUp(t *testing.T) {
 		t.Fatalf("MkdirAll(.codex): %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(`notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]`+"\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile(codex config): %v", err)
+		t.Fatalf("WriteFile(codex legacy config): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "hooks.json"), []byte(setup.GenerateCodexHookConfig()), 0o644); err != nil {
+		t.Fatalf("WriteFile(codex hooks): %v", err)
 	}
 
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode", "plugins"), 0o755); err != nil {
@@ -179,17 +182,17 @@ func TestRemoteSetupNothingToConfigureWhenAlreadySetUp(t *testing.T) {
 	if !strings.Contains(out, "Claude Code -- already configured") {
 		t.Fatalf("expected Claude already-configured preview, got %q", out)
 	}
-	if !strings.Contains(out, "Codex CLI -- already configured") {
-		t.Fatalf("expected Codex already-configured preview, got %q", out)
+	if !strings.Contains(out, "Codex CLI -- will enable codex_hooks in ~/.codex/config.toml and add Stop hook to ~/.codex/hooks.json") {
+		t.Fatalf("expected Codex migration preview, got %q", out)
 	}
 	if !strings.Contains(out, "OpenCode -- already configured") {
 		t.Fatalf("expected OpenCode already-configured preview, got %q", out)
 	}
-	if !strings.Contains(out, "Nothing to configure — all supported tools already set up.") {
-		t.Fatalf("expected nothing-to-configure message, got %q", out)
+	if strings.Contains(out, "Nothing to configure — all supported tools already set up.") {
+		t.Fatalf("did not expect nothing-to-configure message during Codex migration, got %q", out)
 	}
-	if strings.Contains(out, "Apply? [Y/n] ") {
-		t.Fatalf("did not expect prompt when nothing needs configuration, got %q", out)
+	if !strings.Contains(out, "Apply? [Y/n] ") {
+		t.Fatalf("expected prompt when Codex still needs migration, got %q", out)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
@@ -231,7 +234,7 @@ func TestRemoteSetupContinuesAfterPerToolFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(codex): %v", err)
 	}
-	if !setup.IsCodexConfigured(filepath.Join(home, ".codex", "config.toml")) {
+	if !setup.IsCodexConfigured(home) {
 		t.Fatalf("expected Codex config to be structurally configured, got %q", string(codexConfig))
 	}
 }

@@ -165,7 +165,7 @@ Detects supported AI tools on the remote host, shows what will be configured, an
 Current behavior:
 
 - **Claude Code** → `Stop` and `Notification` hooks in `~/.claude/settings.json`
-- **Codex CLI** → root-level `notify` array in `~/.codex/config.toml`
+- **Codex CLI** → `Stop` hook in `~/.codex/hooks.json` plus `features.codex_hooks = true` in `~/.codex/config.toml`
 - **Gemini CLI** → `AfterAgent` and `Notification` hooks in `~/.gemini/settings.json`
 - **OpenCode** → plugin file at `~/.config/opencode/plugins/notifytun.js`
 
@@ -194,7 +194,7 @@ notifytun test-notify --backend auto
 the hook integration for each:
 
 - **Claude Code** → `Stop` and `Notification` hooks in `~/.claude/settings.json`
-- **Codex CLI** → root-level `notify` array in `~/.codex/config.toml`
+- **Codex CLI** → `Stop` hook in `~/.codex/hooks.json` plus `features.codex_hooks = true` in `~/.codex/config.toml`
 - **Gemini CLI** → `AfterAgent` and `Notification` hooks in `~/.gemini/settings.json`
 - **OpenCode** → plugin file at `~/.config/opencode/plugins/notifytun.js`
 
@@ -203,11 +203,14 @@ Hook commands always exit 0 — any DB or logging failure is appended to
 `~/.notifytun/notifytun-errors.log`) so a notifytun outage can never
 block the agent mid-turn.
 
-Notifications include the agent's last message text. For Claude `Stop`
-and Gemini `AfterAgent`, the text comes straight from the hook payload.
-For Claude/Gemini `Notification`, the attention prompt is passed
-through. For OpenCode, the plugin reads the last assistant message via
-the OpenCode SDK and pipes it to `notifytun emit-hook`.
+Notifications include the agent's last message text. For Claude `Stop`,
+Gemini `AfterAgent`, and Codex `Stop`, the text comes straight from the
+hook payload. Codex `Stop` notifications are filtered so only the main
+agent thread is delivered; spawned subagent completions are suppressed
+using Codex transcript metadata. For Claude/Gemini `Notification`, the
+attention prompt is passed through. For OpenCode, the plugin reads the
+last assistant message via the OpenCode SDK and pipes it to
+`notifytun emit-hook`.
 
 ### Claude Code
 
@@ -218,13 +221,37 @@ the OpenCode SDK and pipes it to `notifytun emit-hook`.
 
 ### Codex CLI
 
-`remote-setup` writes this root-level config entry:
+`remote-setup` enables Codex hooks in `~/.codex/config.toml`:
 
 ```toml
-notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]
+[features]
+codex_hooks = true
 ```
 
-When Codex passes its JSON notify payload, `notifytun emit-hook` will derive a conservative title/body from the payload.
+It also installs this `Stop` hook in `~/.codex/hooks.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit-hook --tool codex --event Stop"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+When Codex sends the `Stop` hook payload, `notifytun emit-hook` uses
+`last_assistant_message` for the body and suppresses subagent thread
+completions by inspecting the session transcript metadata referenced by
+`transcript_path`.
 
 ### Gemini CLI
 

@@ -8,44 +8,88 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
-const codexNotifyConfigLine = `notify = ["notifytun", "emit-hook", "--tool", "codex", "--event", "notify"]`
+const codexStopCommand = "notifytun emit-hook --tool codex --event Stop"
 
-var codexNotifyCommand = []string{"notifytun", "emit-hook", "--tool", "codex", "--event", "notify"}
+var codexStripPrefixes = []string{"notifytun emit ", "notifytun emit-hook "}
 
-// CodexConfigurator manages ~/.codex/config.toml notify.
+// CodexConfigurator manages ~/.codex/config.toml + ~/.codex/hooks.json.
 type CodexConfigurator struct{}
 
 func (*CodexConfigurator) Name() string       { return "Codex CLI" }
 func (*CodexConfigurator) Binaries() []string { return []string{"codex"} }
 func (*CodexConfigurator) ConfigPath(home string) string {
-	return filepath.Join(home, ".codex", "config.toml")
+	return codexHooksPath(home)
 }
 func (*CodexConfigurator) IsConfigured(home string) bool {
-	return IsCodexConfigured((&CodexConfigurator{}).ConfigPath(home))
+	return IsCodexConfigured(home)
 }
 func (*CodexConfigurator) PreviewAction(home string) string {
-	return "will set notify in ~/.codex/config.toml"
+	return "will enable codex_hooks in ~/.codex/config.toml and add Stop hook to ~/.codex/hooks.json"
 }
 func (c *CodexConfigurator) Apply(home string) error {
-	return ApplyCodexNotifyConfig(c.ConfigPath(home))
+	return ApplyCodexConfig(codexConfigPath(home), c.ConfigPath(home))
 }
 
-// GenerateCodexNotifyConfig returns the notify config line for Codex CLI.
-func GenerateCodexNotifyConfig() string {
-	return codexNotifyConfigLine + "\n"
+func codexConfigPath(home string) string {
+	return filepath.Join(home, ".codex", "config.toml")
 }
 
-// IsCodexConfigured reports whether the notifytun notify hook is already present.
-func IsCodexConfigured(configPath string) bool {
-	cfg, err := readCodexConfig(configPath)
+func codexHooksPath(home string) string {
+	return filepath.Join(home, ".codex", "hooks.json")
+}
+
+func codexHookEvents() []JSONHookEvent {
+	return []JSONHookEvent{{Event: "Stop", Command: codexStopCommand}}
+}
+
+// GenerateCodexConfig returns the config.toml fragment needed for Codex hooks.
+func GenerateCodexConfig() string {
+	return "[features]\ncodex_hooks = true\n"
+}
+
+// GenerateCodexHookConfig returns the hooks.json snippet notifytun writes.
+func GenerateCodexHookConfig() string {
+	return `{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notifytun emit-hook --tool codex --event Stop"
+          }
+        ]
+      }
+    ]
+  }
+}`
+}
+
+// IsCodexConfigured reports whether Codex hooks are enabled, the canonical
+// Stop hook is present, and no legacy root notify entry remains.
+func IsCodexConfigured(home string) bool {
+	cfg, err := readCodexConfig(codexConfigPath(home))
 	if err != nil {
 		return false
 	}
-	return codexNotifyConfigured(cfg)
+	if !codexHooksFeatureEnabled(cfg) {
+		return false
+	}
+	if codexHasRootNotify(cfg) {
+		return false
+	}
+	return IsCodexHookConfigured(codexHooksPath(home))
 }
 
-// ApplyCodexNotifyConfig writes the notifytun notify config at the TOML root.
-func ApplyCodexNotifyConfig(configPath string) error {
+// IsCodexHookConfigured reports whether the canonical Codex Stop hook exists.
+func IsCodexHookConfigured(hooksPath string) bool {
+	return JSONHooksConfigured(hooksPath, codexHookEvents())
+}
+
+// ApplyCodexConfig enables Codex hooks, removes the legacy root notify
+// integration, and installs the canonical Stop hook.
+func ApplyCodexConfig(configPath, hooksPath string) error {
 	cfg, err := readCodexConfig(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -55,10 +99,13 @@ func ApplyCodexNotifyConfig(configPath string) error {
 		}
 	}
 
-	if codexNotifyConfigured(cfg) {
-		return nil
+	features, err := mapValue(cfg["features"], "features")
+	if err != nil {
+		return fmt.Errorf("parse Codex config: %w", err)
 	}
-	cfg["notify"] = append([]string(nil), codexNotifyCommand...)
+	features["codex_hooks"] = true
+	cfg["features"] = features
+	delete(cfg, "notify")
 
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		return fmt.Errorf("create Codex config dir: %w", err)
@@ -71,7 +118,11 @@ func ApplyCodexNotifyConfig(configPath string) error {
 	if err := os.WriteFile(configPath, []byte(updated), 0o644); err != nil {
 		return fmt.Errorf("write Codex config: %w", err)
 	}
-	return nil
+
+	if IsCodexHookConfigured(hooksPath) {
+		return nil
+	}
+	return ApplyJSONHooks(hooksPath, codexHookEvents(), codexStripPrefixes)
 }
 
 func readCodexConfig(configPath string) (map[string]any, error) {
@@ -90,17 +141,22 @@ func readCodexConfig(configPath string) (map[string]any, error) {
 	return cfg, nil
 }
 
-func codexNotifyConfigured(cfg map[string]any) bool {
-	raw, ok := cfg["notify"]
+func codexHooksFeatureEnabled(cfg map[string]any) bool {
+	raw, ok := cfg["features"]
 	if !ok {
 		return false
 	}
+	features, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	enabled, ok := features["codex_hooks"].(bool)
+	return ok && enabled
+}
 
-	notifyArgs, ok := stringSlice(raw)
-	if !ok {
-		return false
-	}
-	return equalStringSlices(notifyArgs, codexNotifyCommand)
+func codexHasRootNotify(cfg map[string]any) bool {
+	_, ok := cfg["notify"]
+	return ok
 }
 
 func stringSlice(value any) ([]string, bool) {
