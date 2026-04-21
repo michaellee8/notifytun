@@ -85,7 +85,9 @@ Responsibilities:
 
 - set `beeep.AppName = "notifytun"`
 - implement `Notify(ctx context.Context, n Notification) error`
-- call `beeep.Notify(n.Title, n.Body, "")`
+- call `beeep.Notify` with a bundled PNG byte payload so the native path does
+  not rely on an empty-string icon value that `beeep` may interpret as a file
+  path on some platforms
 
 `ctx` remains part of the interface for consistency with the rest of the code,
 even though `beeep.Notify` itself is not context-aware.
