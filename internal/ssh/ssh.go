@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	// waitDelay bounds subprocess shutdown after cancellation before forced cleanup.
+	// waitDelay bounds how long exec.Cmd waits to finish shutdown cleanup after a
+	// cancellation request before it forces progress internally.
 	waitDelay = 5 * time.Second
 )
 
@@ -92,9 +93,10 @@ func (s *Session) Wait() error {
 	return s.waitErr
 }
 
-// Close cancels the run context and waits for the subprocess to exit. If the
-// process does not exit within waitDelay, the stdio pipes are closed and the
-// process is killed.
+// Close cancels the run context and waits for the subprocess to exit. On
+// Unix-like platforms that first requests a graceful shutdown via SIGTERM; on
+// Windows it kills the local ssh process immediately. waitDelay still bounds
+// how long exec.Cmd waits to finish its own shutdown cleanup after cancellation.
 func (s *Session) Close() error {
 	if s == nil {
 		return nil
