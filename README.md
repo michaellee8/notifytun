@@ -5,7 +5,7 @@
 SSH into a remote box:
 
 ```bash
-go install github.com/michaellee8/notifytun/cmd/notifytun@latest
+go install github.com/michaellee8/notifytun/cmd/notifytun@v0.1.0
 # Assuming you have ~/go/bin in PATH
 notifytun remote-setup
 # If you didn't
@@ -15,7 +15,7 @@ notifytun remote-setup
 On your own laptop/desktop:
 
 ```bash
-go install github.com/michaellee8/notifytun/cmd/notifytun@latest
+go install github.com/michaellee8/notifytun/cmd/notifytun@v0.1.0
 notifytun local --target [same-target-you-use-for-ssh]
 ```
 
@@ -61,7 +61,7 @@ If the SSH session drops, notifications continue queueing remotely. When the con
 Quick one-liner:
 
 ```bash
-go install github.com/michaellee8/notifytun/cmd/notifytun@latest
+go install github.com/michaellee8/notifytun/cmd/notifytun@v0.1.0
 ```
 
 Build the binary from the repo root:
