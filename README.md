@@ -19,7 +19,7 @@ go install github.com/michaellee8/notifytun/cmd/notifytun@v0.1.0
 notifytun local --target [same-target-you-use-for-ssh]
 ```
 
-Now you get desktop notifications whenever your agent stoped/needs your attention. Works for both MacOS and Linux for now. Windows support incoming (you can use WSL).
+Now you get desktop notifications whenever your agent stoped/needs your attention. Works for both MacOS, Linux and Windows.
 
 ## What is this
 
