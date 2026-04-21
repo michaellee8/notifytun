@@ -9,12 +9,11 @@ import (
 	"io"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 )
 
 const (
-	// waitDelay is the grace period between SIGTERM and SIGKILL on shutdown.
+	// waitDelay bounds subprocess shutdown after cancellation before forced cleanup.
 	waitDelay = 5 * time.Second
 )
 
@@ -52,10 +51,7 @@ func Connect(ctx context.Context, target, remoteCmd string) (*Session, error) {
 
 	cmd := exec.CommandContext(runCtx, "ssh", args...)
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return cmd.Process.Signal(syscall.SIGTERM)
+		return cancelProcess(cmd.Process)
 	}
 	cmd.WaitDelay = waitDelay
 
@@ -96,9 +92,9 @@ func (s *Session) Wait() error {
 	return s.waitErr
 }
 
-// Close cancels the run context (triggering SIGTERM on the subprocess) and
-// waits for it to exit. If the process does not exit within waitDelay, the
-// stdio pipes are closed and the process is killed.
+// Close cancels the run context and waits for the subprocess to exit. If the
+// process does not exit within waitDelay, the stdio pipes are closed and the
+// process is killed.
 func (s *Session) Close() error {
 	if s == nil {
 		return nil

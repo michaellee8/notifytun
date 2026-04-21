@@ -1,8 +1,10 @@
 package notifier
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image/png"
 	"testing"
 
 	"github.com/gen2brain/beeep"
@@ -18,12 +20,10 @@ func TestBeeepNotifyForwardsNotification(t *testing.T) {
 
 	var gotTitle string
 	var gotBody string
-	var gotIcon any
 
 	beeepNotify = func(title, body string, icon any) error {
 		gotTitle = title
 		gotBody = body
-		gotIcon = icon
 		return nil
 	}
 
@@ -41,11 +41,48 @@ func TestBeeepNotifyForwardsNotification(t *testing.T) {
 	if gotBody != "notifytun finished" {
 		t.Fatalf("expected body %q, got %q", "notifytun finished", gotBody)
 	}
-	if gotIcon != "" {
-		t.Fatalf("expected empty icon, got %#v", gotIcon)
-	}
 	if beeep.AppName != "notifytun" {
 		t.Fatalf("expected AppName %q, got %q", "notifytun", beeep.AppName)
+	}
+}
+
+func TestBeeepNotifyUsesEmbeddedPNGIcon(t *testing.T) {
+	originalNotify := beeepNotify
+	originalAppName := beeep.AppName
+	t.Cleanup(func() {
+		beeepNotify = originalNotify
+		beeep.AppName = originalAppName
+	})
+
+	var gotIcon any
+
+	beeepNotify = func(title, body string, icon any) error {
+		gotIcon = icon
+		return nil
+	}
+
+	err := NewBeeep().Notify(context.Background(), Notification{
+		Title: "Task Complete",
+		Body:  "notifytun finished",
+	})
+	if err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+
+	iconBytes, ok := gotIcon.([]byte)
+	if !ok {
+		t.Fatalf("expected []byte icon payload, got %T (%#v)", gotIcon, gotIcon)
+	}
+	if len(iconBytes) == 0 {
+		t.Fatal("expected non-empty icon payload")
+	}
+
+	wantPNGHeader := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if !bytes.HasPrefix(iconBytes, wantPNGHeader) {
+		t.Fatalf("expected PNG icon payload, got %x", iconBytes)
+	}
+	if _, err := png.Decode(bytes.NewReader(iconBytes)); err != nil {
+		t.Fatalf("expected decodable PNG icon payload, got %v", err)
 	}
 }
 
