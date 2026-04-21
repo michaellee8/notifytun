@@ -1,5 +1,28 @@
 # notifytun
 
+## TLDR
+
+SSH into a remote box:
+
+```bash
+go install github.com/michaellee8/notifytun/cmd/notifytun@latest
+# Assuming you have ~/go/bin in PATH
+notifytun remote-setup
+# If you didn't
+# ~/go/bin/notifytun remote-setup
+```
+
+On your own laptop/desktop:
+
+```bash
+go install github.com/michaellee8/notifytun/cmd/notifytun@latest
+notifytun local --target [same-target-you-use-for-ssh]
+```
+
+Now you get desktop notifications whenever your agent stoped/needs your attention. Works for both MacOS and Linux for now. Windows support incoming (you can use WSL).
+
+## What is this
+
 `notifytun` is a single Go CLI that tunnels notifications from a remote Linux VM to your local desktop over SSH. It is built for the common "AI agent running on a remote box, human waiting on a laptop" workflow: tool hooks write notifications remotely, and `notifytun local` delivers them on your machine without a remote daemon or third-party notification service.
 
 ## Why use it
