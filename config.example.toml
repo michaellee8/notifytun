@@ -11,8 +11,8 @@
 # Wrapped in sh -lc for PATH resolution
 # remote-bin = "notifytun"
 
-# Notifier backend: auto, macos, linux, generic
-# auto detects based on OS
+# Notifier backend: auto, generic
+# auto uses the native beeep-backed notifier
 # backend = "auto"
 
 # Custom notification command for generic backend

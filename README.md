@@ -30,8 +30,8 @@ Now you get desktop notifications whenever your agent stoped/needs your attentio
 - One binary for both local and remote use
 - Durable remote queue backed by SQLite
 - SSH-based transport with automatic reconnects
-- Native local notifications on macOS and Linux
-- Generic command backend for unsupported platforms
+- Native cross-platform local notifications via `beeep`
+- Generic command backend when you want full control over delivery
 - Helper command to wire up Claude Code, Codex CLI, Gemini CLI, and OpenCode hooks on the remote machine
 
 ## How it works
@@ -53,10 +53,7 @@ If the SSH session drops, notifications continue queueing remotely. When the con
 
 - Go `1.25.5` or newer to build from source
 - A remote Linux host reachable over SSH
-- A local machine running:
-  - macOS for the `macos` backend
-  - Linux with `notify-send` available for the `linux` backend
-  - any platform with `--backend generic --notify-cmd ...`
+- A local machine with a desktop notification environment supported by `beeep` (macOS, Linux, or Windows), or a custom notification command via `--backend generic --notify-cmd ...`
 - An SSH trust relationship already established in `~/.ssh/known_hosts`
 
 ## Build and install
@@ -137,7 +134,7 @@ Supported keys:
 
 - `local.target`: SSH target for `notifytun local`
 - `local.remote-bin`: remote binary path or command name
-- `local.backend`: `auto`, `macos`, `linux`, or `generic`
+- `local.backend`: `auto` or `generic`
 - `local.notify-cmd`: command used by the `generic` backend
 
 Remote defaults:
@@ -161,8 +158,8 @@ Common flags:
 
 - `--target`: required unless set in config
 - `--remote-bin`: remote `notifytun` path or command name
-- `--backend`: `auto`, `macos`, `linux`, `generic`
-- `--notify-cmd`: required for `generic`, and also used when `auto` cannot select a native backend
+- `--backend`: `auto`, `generic`
+- `--notify-cmd`: required for `generic`
 - `--config`: explicit config file path
 
 ### `notifytun attach`
@@ -301,16 +298,21 @@ Set `--target` explicitly or add `local.target` to `~/.notifytun/config.toml`.
 - the host key is already trusted
 - authentication works with your SSH agent or SSH config
 
-### Linux notifications do not appear
+### Native notifications do not appear
 
-The `linux` backend uses `notify-send`. Install it or switch to `--backend generic --notify-cmd ...`.
+Try:
+
+```bash
+notifytun test-notify --backend auto
+```
+
+If native delivery still fails on your machine, switch to `--backend generic --notify-cmd ...`.
 
 ### `--notify-cmd` is required
 
 That happens when:
 
 - you selected `--backend generic` without a command
-- `--backend auto` could not find a native notifier on the current platform
 
 ### Remote binary cannot be found
 

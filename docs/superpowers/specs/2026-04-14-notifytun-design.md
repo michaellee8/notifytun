@@ -11,6 +11,8 @@
 > Everything else in this document (SSH transport, SQLite protocol, notifier
 > backends, etc.) still applies.
 
+> **Note (2026-04-21):** The local notifier backend design in this document has been superseded by [2026-04-21-beeep-notifier-design.md](2026-04-21-beeep-notifier-design.md).
+
 ## 1. Overview
 
 notifytun is a single Go binary that tunnels notifications from a remote Linux VM to a local machine over SSH. No background daemons required — the `local` subcommand manages the SSH lifecycle directly using `x/crypto/ssh`.
